@@ -69,7 +69,6 @@ RUN apt-get update && apt-get install -y git
 
 RUN pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
 RUN python -m pip install --upgrade setuptools
-RUN python -m pip install torch==2.2.2 torchvision==0.17.2 --extra-index-url https://download.pytorch.org/whl/cpu
 RUN adduser \
     --disabled-password \
     --gecos "" \
@@ -96,6 +95,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
     python -m pip install -r requirements.txt 
 
+RUN pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+
 RUN rm -rf /venv/MuseTalk/lib/python3.10/site-packages/mmcv*
 
 RUN pip uninstall -y mmcv mmcv-full mmcv-lite 
@@ -114,6 +115,7 @@ RUN sh download_weights.sh
 # Switch to the non-privileged user to run the application.
 USER appuser
 
+RUN ls 
 #Test run
 RUN sh inference.sh v1.5 normal
 
