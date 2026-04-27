@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -26,7 +27,7 @@ from tqdm import tqdm
 from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.blending import get_image_blending, get_image_prepare_material
 from musetalk.utils.face_parsing import FaceParsing
-from musetalk.utils.preprocessing import get_landmark_and_bbox
+from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen
 
 
@@ -341,13 +342,74 @@ class RealtimeAvatar:
         print(f"realtime result saved to {output_vid}")
         return output_vid
 
+    @classmethod
+    def from_prepared(
+        cls,
+        ctx: RealtimeJobContext,
+        avatar_root: str,
+        batch_size: int,
+        avatar_id: str,
+    ) -> RealtimeAvatar:
+        """Load a previously prepared avatar from disk (no landmark/mask prep)."""
+        self = object.__new__(cls)
+        self.ctx = ctx
+        self.avatar_id = avatar_id
+        self.video_path = ""
+        self.bbox_shift = 0.0
+        self.base_path = avatar_root
+        self.avatar_path = self.base_path
+        self.full_imgs_path = f"{self.avatar_path}/full_imgs"
+        self.coords_path = f"{self.avatar_path}/coords.pkl"
+        self.latents_out_path = f"{self.avatar_path}/latents.pt"
+        self.video_out_path = f"{self.avatar_path}/vid_output/"
+        self.mask_out_path = f"{self.avatar_path}/mask"
+        self.mask_coords_path = f"{self.avatar_path}/mask_coords.pkl"
+        self.avatar_info_path = f"{self.avatar_path}/avator_info.json"
+        self.batch_size = batch_size
+        self.idx = 0
+
+        if not os.path.isfile(self.latents_out_path):
+            raise FileNotFoundError(f"missing prepared avatar: {self.latents_out_path}")
+        self.input_latent_list_cycle = torch.load(self.latents_out_path)
+        with open(self.coords_path, "rb") as f:
+            self.coord_list_cycle = pickle.load(f)
+        input_img_list = sorted(
+            glob.glob(os.path.join(self.full_imgs_path, "*.[jpJP][pnPN]*[gG]")),
+            key=lambda x: int(os.path.splitext(os.path.basename(x))[0]),
+        )
+        if not input_img_list:
+            raise FileNotFoundError(f"no frames under {self.full_imgs_path}")
+        self.frame_list_cycle = read_imgs(input_img_list)
+        with open(self.mask_coords_path, "rb") as f:
+            self.mask_coords_list_cycle = pickle.load(f)
+        input_mask_list = sorted(
+            glob.glob(os.path.join(self.mask_out_path, "*.[jpJP][pnPN]*[gG]")),
+            key=lambda x: int(os.path.splitext(os.path.basename(x))[0]),
+        )
+        self.mask_list_cycle = read_imgs(input_mask_list)
+        if os.path.isfile(self.avatar_info_path):
+            with open(self.avatar_info_path) as f:
+                self.avatar_info = json.load(f)
+        else:
+            self.avatar_info = {"avatar_id": avatar_id, "version": ctx.version}
+        return self
+
+
+def _avatar_store_dir() -> str:
+    root = Path(os.environ.get("API_JOB_DIR", "./results/api_jobs"))
+    d = root / "realtime_avatars"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d.resolve())
+
 
 def run_realtime_job(
     ctx: RealtimeJobContext,
     work_dir: str,
     video_path: str,
     audio_path: str,
-    avatar_id: str,
+    job_id: str,
+    persist_avatar_id: str,
+    reuse_avatar: bool,
     bbox_shift: float,
     extra_margin: int,
     parsing_mode: str,
@@ -356,12 +418,17 @@ def run_realtime_job(
     prep_frames: int,
     batch_size: int,
     fps: int,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """
-    Extract first ``prep_frames`` from ``video_path`` with ffmpeg, build avatar
-    under ``work_dir``, run realtime inference on ``audio_path``.
+    If ``reuse_avatar`` is False: extract first ``prep_frames`` from ``video_path``,
+    build avatar under shared ``realtime_avatars/{persist_avatar_id}/``, infer, copy
+    result to ``work_dir/result.mp4``.
+
+    If True: load existing ``realtime_avatars/{persist_avatar_id}/``, infer only,
+    copy result to ``work_dir/result.mp4``.
+
+    Returns ``(result_path, info, persist_avatar_id)``.
     """
-    # ctx carries model refs; refresh fp/margin/mode for this job
     ctx = RealtimeJobContext(
         version=ctx.version,
         extra_margin=extra_margin,
@@ -385,25 +452,43 @@ def run_realtime_job(
         timesteps=ctx.timesteps,
     )
 
-    frames_dir = os.path.join(work_dir, "prep_frames")
-    extract_first_frames_ffmpeg(video_path, frames_dir, prep_frames)
+    store = _avatar_store_dir()
+    avatar_root = os.path.join(store, persist_avatar_id)
+    out_vid_base = "j" + job_id.replace("-", "")
 
-    avatar_root = os.path.join(work_dir, "avatar")
-    avatar = RealtimeAvatar(
-        ctx,
-        avatar_id=avatar_id,
-        video_path=frames_dir,
-        bbox_shift=bbox_shift,
-        batch_size=batch_size,
-        avatar_root=avatar_root,
-    )
+    if reuse_avatar:
+        avatar = RealtimeAvatar.from_prepared(
+            ctx, avatar_root, batch_size, persist_avatar_id
+        )
+        info = (
+            f"realtime_reuse; avatar_id={persist_avatar_id}; "
+            f"parsing_mode={parsing_mode}"
+        )
+    else:
+        if not video_path or not os.path.isfile(video_path):
+            raise FileNotFoundError("video_path required for new avatar preparation")
+        frames_dir = os.path.join(work_dir, "prep_frames")
+        extract_first_frames_ffmpeg(video_path, frames_dir, prep_frames)
+
+        avatar = RealtimeAvatar(
+            ctx,
+            avatar_id=persist_avatar_id,
+            video_path=frames_dir,
+            bbox_shift=bbox_shift,
+            batch_size=batch_size,
+            avatar_root=avatar_root,
+        )
+        info = (
+            f"realtime; avatar_id={persist_avatar_id}; prep_frames={prep_frames}; "
+            f"bbox_shift={bbox_shift}; parsing_mode={parsing_mode}"
+        )
+
     out = avatar.inference(
-        audio_path, "output", fps=fps, skip_save_images=ctx.skip_save_images
+        audio_path, out_vid_base, fps=fps, skip_save_images=ctx.skip_save_images
     )
     if not out:
         raise RuntimeError("realtime inference produced no video (check skip_save_images)")
-    info = (
-        f"realtime; prep_frames={prep_frames}; bbox_shift={bbox_shift}; "
-        f"parsing_mode={parsing_mode}"
-    )
-    return out, info
+
+    result_copy = os.path.join(work_dir, "result.mp4")
+    shutil.copy2(out, result_copy)
+    return result_copy, info, persist_avatar_id

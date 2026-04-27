@@ -448,6 +448,8 @@ def _realtime_api_runner(
     video_path: str,
     audio_path: str,
     job_id: str,
+    persist_avatar_id: str,
+    reuse_avatar: bool,
     bbox_shift: float,
     extra_margin: int,
     parsing_mode: str,
@@ -456,7 +458,7 @@ def _realtime_api_runner(
     prep_frames: int,
     batch_size: int,
     fps: int,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     from musetalk.service.realtime_job import RealtimeJobContext, run_realtime_job
 
     ctx = RealtimeJobContext(
@@ -487,6 +489,8 @@ def _realtime_api_runner(
         video_path,
         audio_path,
         job_id,
+        persist_avatar_id,
+        reuse_avatar,
         bbox_shift,
         extra_margin,
         parsing_mode,

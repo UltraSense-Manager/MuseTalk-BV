@@ -4,7 +4,7 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -204,7 +204,9 @@ def create_service_app(
         @app.post("/api/realtime/job", dependencies=[Depends(bearer_dep)])
         async def create_realtime_job(
             audio: UploadFile = File(..., description="Driving audio"),
-            video: UploadFile = File(..., description="Reference video (first frames used for prep)"),
+            video: Optional[UploadFile] = File(
+                None, description="Reference video (required unless reuse_avatar_id)"
+            ),
             bbox_shift: float = Form(0),
             extra_margin: int = Form(10),
             parsing_mode: str = Form("jaw"),
@@ -213,24 +215,57 @@ def create_service_app(
             realtime_prep_frames: int = Form(30),
             realtime_batch_size: int = Form(20),
             realtime_fps: int = Form(25),
+            reuse_avatar_id: str = Form(
+                "",
+                description="If set, skip video prep and reuse persisted avatar materials",
+            ),
         ) -> JSONResponse:
             prep = max(1, min(300, int(realtime_prep_frames)))
             bs = max(1, min(128, int(realtime_batch_size)))
             fps = max(1, min(60, int(realtime_fps)))
+
+            reuse = (reuse_avatar_id or "").strip()
+            if reuse:
+                if not _valid_contract_job_id(reuse):
+                    raise HTTPException(
+                        status_code=400, detail="invalid reuse_avatar_id"
+                    )
+                av_dir = _job_root() / "realtime_avatars" / reuse
+                if not (av_dir / "latents.pt").is_file():
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"unknown or incomplete avatar_id: {reuse!r}",
+                    )
+                persist_avatar_id = reuse
+                is_reuse = True
+                video_disk_path: str | None = None
+            else:
+                if video is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="video is required unless reuse_avatar_id is set",
+                    )
+                persist_avatar_id = str(uuid.uuid4())
+                is_reuse = False
+                video_suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+                video_disk_path = f"input_video{video_suffix}"
 
             job_id = str(uuid.uuid4())
             work = _job_root() / "realtime" / job_id
             work.mkdir(parents=True, exist_ok=False)
 
             audio_suffix = Path(audio.filename or "audio.wav").suffix or ".wav"
-            video_suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
             audio_path = work / f"input_audio{audio_suffix}"
-            video_path = work / f"input_video{video_suffix}"
 
             with open(audio_path, "wb") as af:
                 shutil.copyfileobj(audio.file, af)
-            with open(video_path, "wb") as vf:
-                shutil.copyfileobj(video.file, vf)
+
+            video_str = ""
+            if not is_reuse and video_disk_path is not None and video is not None:
+                vp = work / video_disk_path
+                with open(vp, "wb") as vf:
+                    shutil.copyfileobj(video.file, vf)
+                video_str = str(vp)
 
             with _JOBS_LOCK:
                 _JOBS[job_id] = {
@@ -239,6 +274,8 @@ def create_service_app(
                     "message": "",
                     "kind": "realtime",
                     "realtime_prep_frames": prep,
+                    "avatar_id": persist_avatar_id,
+                    "reuse_avatar": is_reuse,
                 }
 
             threading.Thread(
@@ -246,8 +283,10 @@ def create_service_app(
                 args=(
                     job_id,
                     str(audio_path),
-                    str(video_path),
+                    video_str,
                     str(work),
+                    persist_avatar_id,
+                    is_reuse,
                     bbox_shift,
                     extra_margin,
                     parsing_mode,
@@ -264,9 +303,11 @@ def create_service_app(
                 status_code=202,
                 content={
                     "job_id": job_id,
+                    "avatar_id": persist_avatar_id,
                     "status": "queued",
                     "kind": "realtime",
                     "realtime_prep_frames": prep,
+                    "reuse_avatar": is_reuse,
                 },
             )
 
@@ -283,6 +324,8 @@ def create_service_app(
         }
         if info.get("kind"):
             out["kind"] = info["kind"]
+        if info.get("avatar_id"):
+            out["avatar_id"] = info["avatar_id"]
         if info["status"] == "done":
             out["bbox_shift_text"] = info.get("bbox_shift_text", "")
         return out
@@ -392,6 +435,8 @@ def _run_realtime_job_background(
     audio_path: str,
     video_path: str,
     work_dir: str,
+    persist_avatar_id: str,
+    reuse_avatar: bool,
     bbox_shift: float,
     extra_margin: int,
     parsing_mode: str,
@@ -400,7 +445,7 @@ def _run_realtime_job_background(
     prep_frames: int,
     batch_size: int,
     fps: int,
-    realtime_runner: Callable[..., tuple[str, str]],
+    realtime_runner: Callable[..., tuple[str, str, str]],
 ) -> None:
     def set_status(status: str, **extra: Any) -> None:
         with _JOBS_LOCK:
@@ -411,11 +456,13 @@ def _run_realtime_job_background(
 
     try:
         set_status("processing")
-        out_path, bbox_text = realtime_runner(
+        out_path, bbox_text, _aid = realtime_runner(
             work_dir,
             video_path,
             audio_path,
             job_id,
+            persist_avatar_id,
+            reuse_avatar,
             bbox_shift,
             extra_margin,
             parsing_mode,
@@ -430,6 +477,7 @@ def _run_realtime_job_background(
             result_path=out_path,
             bbox_shift_text=bbox_text,
             message="",
+            avatar_id=persist_avatar_id,
         )
     except Exception as e:
         set_status("error", message=str(e))

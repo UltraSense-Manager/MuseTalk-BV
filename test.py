@@ -21,6 +21,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -70,7 +71,7 @@ def _submit_multipart_job(
     base: str,
     headers: dict[str, str],
     audio_path: str,
-    video_path: str,
+    video_path: Optional[str],
     submit_path: str,
     form_data: dict[str, str],
     submit_timeout: int,
@@ -78,26 +79,42 @@ def _submit_multipart_job(
     url = f"{base}{submit_path}"
     print(f"POST {url}")
     try:
-        with open(audio_path, "rb") as af, open(video_path, "rb") as vf:
-            files = {
+        af = open(audio_path, "rb")
+        try:
+            files: dict[str, tuple[str, object, str]] = {
                 "audio": (
                     os.path.basename(audio_path),
                     af,
                     _guess_audio_mime(audio_path),
                 ),
-                "video": (
-                    os.path.basename(video_path),
-                    vf,
-                    _guess_video_mime(video_path),
-                ),
             }
-            r = requests.post(
-                url,
-                headers=headers,
-                files=files,
-                data=form_data,
-                timeout=submit_timeout,
-            )
+            if video_path:
+                vf = open(video_path, "rb")
+                try:
+                    files["video"] = (
+                        os.path.basename(video_path),
+                        vf,
+                        _guess_video_mime(video_path),
+                    )
+                    r = requests.post(
+                        url,
+                        headers=headers,
+                        files=files,
+                        data=form_data,
+                        timeout=submit_timeout,
+                    )
+                finally:
+                    vf.close()
+            else:
+                r = requests.post(
+                    url,
+                    headers=headers,
+                    files=files,
+                    data=form_data,
+                    timeout=submit_timeout,
+                )
+        finally:
+            af.close()
     except requests.RequestException as e:
         print(f"error: submit failed: {e}", file=sys.stderr)
         return 1, None
@@ -123,7 +140,10 @@ def _handle_submit_response(r: requests.Response) -> tuple[int, str | None]:
     if not job_id:
         print(f"error: no job_id in response: {payload}", file=sys.stderr)
         return 1, None
-    print(f"job_id={job_id} status={payload.get('status', '')} kind={payload.get('kind', '')}")
+    extra = f" kind={payload.get('kind', '')!r}"
+    if payload.get("avatar_id"):
+        extra += f" avatar_id={payload.get('avatar_id')!r}"
+    print(f"job_id={job_id} status={payload.get('status', '')}{extra}")
     return 0, job_id
 
 
@@ -165,7 +185,9 @@ def _poll_until_done(
             print(f"error: job failed: {body.get('message', body)}", file=sys.stderr)
             return 1
 
-        print(f"  status={status!r} kind={body.get('kind', '')!r} …")
+        av = body.get("avatar_id")
+        avs = f" avatar_id={av!r}" if av else ""
+        print(f"  status={status!r} kind={body.get('kind', '')!r}{avs} …")
         time.sleep(poll_interval)
     print("error: timed out waiting for job", file=sys.stderr)
     return 1
@@ -247,7 +269,7 @@ def run_realtime_job(
     base: str,
     headers: dict[str, str],
     audio_path: str,
-    video_path: str,
+    video_path: Optional[str],
     out: str,
     deadline: float,
     poll_interval: float,
@@ -379,21 +401,37 @@ def main() -> int:
         default=90,
         help="right_cheek_width form field",
     )
+    parser.add_argument(
+        "--reuse-avatar-id",
+        default="",
+        help="Realtime: POST reuse_avatar_id (skip video; new job_id, same persisted avatar)",
+    )
 
     args = parser.parse_args()
 
     base = args.base_url.rstrip("/")
     audio_path = _resolve_path(args.audio)
-    video_path = _resolve_path(args.video)
+    reuse_av = ""
+    if args.mode == "realtime":
+        reuse_av = (args.reuse_avatar_id or "").strip()
+    video_path: Optional[str] = None
+    if not reuse_av:
+        video_path = _resolve_path(args.video)
     out = args.out or (
         "test_realtime_output.mp4"
         if args.mode == "realtime"
         else "test_job_output.mp4"
     )
 
-    for label, path in (("audio", audio_path), ("video", video_path)):
-        if not os.path.isfile(path):
-            print(f"error: missing {label} file: {path}", file=sys.stderr)
+    if not os.path.isfile(audio_path):
+        print(f"error: missing audio file: {audio_path}", file=sys.stderr)
+        return 1
+    if not reuse_av:
+        if not video_path or not os.path.isfile(video_path):
+            print(
+                f"error: missing video file: {video_path or args.video}",
+                file=sys.stderr,
+            )
             return 1
 
     headers = _auth_headers(args.token)
@@ -427,6 +465,8 @@ def main() -> int:
         "realtime_batch_size": str(args.realtime_batch_size),
         "realtime_fps": str(args.realtime_fps),
     }
+    if reuse_av:
+        rt_form["reuse_avatar_id"] = reuse_av
     return run_realtime_job(
         base,
         headers,
