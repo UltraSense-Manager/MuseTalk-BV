@@ -10,9 +10,9 @@ mkdir -p models/musetalk models/musetalkV15 models/syncnet models/dwpose models/
 conda create -n MuseTalk python=3.10
 conda activate MuseTalk
 
-pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
-pip install --upgrade setuptools
 pip install -r requirements.txt
+pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+
 rm -rf /venv/MuseTalk/lib/python3.10/site-packages/mmcv*
 
 pip uninstall -y mmcv mmcv-full mmcv-lite
