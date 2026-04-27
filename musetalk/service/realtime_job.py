@@ -90,10 +90,10 @@ class RealtimeJobContext:
     timesteps: torch.Tensor
 
 
-@torch.no_grad()
 class RealtimeAvatar:
     """Non-interactive avatar prep + realtime inference (from scripts/realtime_inference)."""
 
+    @torch.no_grad()
     def __init__(
         self,
         ctx: RealtimeJobContext,
