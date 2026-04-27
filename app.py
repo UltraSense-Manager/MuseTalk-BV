@@ -2,6 +2,11 @@ import os
 import time
 import pdb
 import re
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 import gradio as gr
 import numpy as np
