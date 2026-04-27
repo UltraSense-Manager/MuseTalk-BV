@@ -13,7 +13,7 @@ The Gradio UI and HTTP API share one process (`app.py`). FastAPI (Uvicorn) serve
 | `GRADIO_PASS` | If `SECURED_MODE` on | Gradio login password. |
 | `USER` | Fallback | Used as username only if `GRADIO_USER` is empty. On Unix, `USER` is often already set to your shell login—prefer `GRADIO_USER` in production. |
 | `PASS` | Fallback | Used as password if `GRADIO_PASS` is empty. |
-| `BEARER_TOKEN` | No | If set, `/api/job*`, `POST /job`, and `GET /job` require `Authorization: Bearer <token>`. If unset, those routes are open (suitable only for trusted networks). |
+| `BEARER_TOKEN` | No | If set, `/api/job*`, `/api/realtime/job`, `POST /job`, and `GET /job` require `Authorization: Bearer <token>`. If unset, those routes are open (suitable only for trusted networks). |
 | `GPU_MULTIPART_FIELD` | No | Multipart **field name** that **clients** must use when `POST`ing the muxed file to **this** server (default `file`). |
 | `API_JOB_DIR` | No | Directory for per-job uploads and metadata (default `./results/api_jobs`). |
 
@@ -71,6 +71,17 @@ Base URL: same host/port as the app (e.g. `http://127.0.0.1:7860`).
 - `POST /api/job` — bearer if set; multipart `audio` + `video` plus optional tuning form fields; `202` with `job_id`.
 - `GET /api/job/{job_id}` — status JSON.
 - `GET /api/job/{job_id}/download` — MP4 when `done`.
+
+### Realtime pipeline (`/api/realtime/job`)
+
+Same job lifecycle as `/api/job` (`GET /api/job/{job_id}`, `/download`). Uses MuseTalk’s **realtime** path: the first **`realtime_prep_frames`** frames (default **30**) are extracted from the uploaded video with **ffmpeg**, then avatar preparation (landmarks, latents, masks) and batched inference (as in `scripts/realtime_inference.py`), then ffmpeg muxes frames + driving audio.
+
+- `POST /api/realtime/job` — multipart `audio` + `video`, plus optional form fields:
+  - Same tuning as `/api/job`: `bbox_shift`, `extra_margin`, `parsing_mode`, `left_cheek_width`, `right_cheek_width`
+  - `realtime_prep_frames` (int, default `30`, clamped 1–300)
+  - `realtime_batch_size` (int, default `20`, clamped 1–128)
+  - `realtime_fps` (int, default `25`, clamped 1–60)
+- Response `202` JSON includes `"kind": "realtime"` and `realtime_prep_frames`.
 
 ### Example: worker-style call (curl)
 

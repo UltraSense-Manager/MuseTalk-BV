@@ -17,3 +17,5 @@ ffplay*
 debug
 exp_out
 .gradio
+test_audio.wav
+test_video.mp4

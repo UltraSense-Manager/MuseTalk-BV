@@ -443,6 +443,61 @@ whisper = whisper.to(device=device, dtype=weight_dtype).eval()
 whisper.requires_grad_(False)
 
 
+def _realtime_api_runner(
+    work_dir: str,
+    video_path: str,
+    audio_path: str,
+    job_id: str,
+    bbox_shift: float,
+    extra_margin: int,
+    parsing_mode: str,
+    left_cheek_width: int,
+    right_cheek_width: int,
+    prep_frames: int,
+    batch_size: int,
+    fps: int,
+) -> tuple[str, str]:
+    from musetalk.service.realtime_job import RealtimeJobContext, run_realtime_job
+
+    ctx = RealtimeJobContext(
+        version="v15",
+        extra_margin=extra_margin,
+        parsing_mode=parsing_mode,
+        audio_padding_length_left=2,
+        audio_padding_length_right=2,
+        skip_save_images=False,
+        left_cheek_width=left_cheek_width,
+        right_cheek_width=right_cheek_width,
+        vae=vae,
+        unet=unet,
+        pe=pe,
+        whisper=whisper,
+        audio_processor=audio_processor,
+        fp=FaceParsing(
+            left_cheek_width=left_cheek_width,
+            right_cheek_width=right_cheek_width,
+        ),
+        device=device,
+        weight_dtype=weight_dtype,
+        timesteps=timesteps,
+    )
+    return run_realtime_job(
+        ctx,
+        work_dir,
+        video_path,
+        audio_path,
+        job_id,
+        bbox_shift,
+        extra_margin,
+        parsing_mode,
+        left_cheek_width,
+        right_cheek_width,
+        prep_frames,
+        batch_size,
+        fps,
+    )
+
+
 def check_video(video):
     if not isinstance(video, str):
         return video # in case of none type
@@ -588,7 +643,9 @@ if svc_cfg.secured_mode and (
         "Set GRADIO_USER and GRADIO_PASS (recommended), or USER and PASS."
     )
 
-service_app = create_service_app(inference, svc_cfg)
+service_app = create_service_app(
+    inference, svc_cfg, realtime_runner=_realtime_api_runner
+)
 if svc_cfg.secured_mode:
     root_app = gr.mount_gradio_app(
         service_app,

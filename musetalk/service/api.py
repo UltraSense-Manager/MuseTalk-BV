@@ -46,6 +46,7 @@ def _require_bearer(
 def create_service_app(
     inference_fn: Callable[..., tuple[str, str]],
     config: ServiceConfig | None = None,
+    realtime_runner: Callable[..., tuple[str, str]] | None = None,
 ) -> FastAPI:
     cfg = config or load_service_config()
 
@@ -198,6 +199,77 @@ def create_service_app(
             content={"job_id": job_id, "status": "queued"},
         )
 
+    if realtime_runner is not None:
+
+        @app.post("/api/realtime/job", dependencies=[Depends(bearer_dep)])
+        async def create_realtime_job(
+            audio: UploadFile = File(..., description="Driving audio"),
+            video: UploadFile = File(..., description="Reference video (first frames used for prep)"),
+            bbox_shift: float = Form(0),
+            extra_margin: int = Form(10),
+            parsing_mode: str = Form("jaw"),
+            left_cheek_width: int = Form(90),
+            right_cheek_width: int = Form(90),
+            realtime_prep_frames: int = Form(30),
+            realtime_batch_size: int = Form(20),
+            realtime_fps: int = Form(25),
+        ) -> JSONResponse:
+            prep = max(1, min(300, int(realtime_prep_frames)))
+            bs = max(1, min(128, int(realtime_batch_size)))
+            fps = max(1, min(60, int(realtime_fps)))
+
+            job_id = str(uuid.uuid4())
+            work = _job_root() / "realtime" / job_id
+            work.mkdir(parents=True, exist_ok=False)
+
+            audio_suffix = Path(audio.filename or "audio.wav").suffix or ".wav"
+            video_suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
+            audio_path = work / f"input_audio{audio_suffix}"
+            video_path = work / f"input_video{video_suffix}"
+
+            with open(audio_path, "wb") as af:
+                shutil.copyfileobj(audio.file, af)
+            with open(video_path, "wb") as vf:
+                shutil.copyfileobj(video.file, vf)
+
+            with _JOBS_LOCK:
+                _JOBS[job_id] = {
+                    "status": "queued",
+                    "work_dir": str(work),
+                    "message": "",
+                    "kind": "realtime",
+                    "realtime_prep_frames": prep,
+                }
+
+            threading.Thread(
+                target=_run_realtime_job_background,
+                args=(
+                    job_id,
+                    str(audio_path),
+                    str(video_path),
+                    str(work),
+                    bbox_shift,
+                    extra_margin,
+                    parsing_mode,
+                    left_cheek_width,
+                    right_cheek_width,
+                    prep,
+                    bs,
+                    fps,
+                    realtime_runner,
+                ),
+                daemon=True,
+            ).start()
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "job_id": job_id,
+                    "status": "queued",
+                    "kind": "realtime",
+                    "realtime_prep_frames": prep,
+                },
+            )
+
     @app.get("/api/job/{job_id}", dependencies=[Depends(bearer_dep)])
     def job_status(job_id: str) -> dict[str, Any]:
         with _JOBS_LOCK:
@@ -209,6 +281,8 @@ def create_service_app(
             "status": info["status"],
             "message": info.get("message", ""),
         }
+        if info.get("kind"):
+            out["kind"] = info["kind"]
         if info["status"] == "done":
             out["bbox_shift_text"] = info.get("bbox_shift_text", "")
         return out
@@ -302,6 +376,54 @@ def _run_job_background(
             parsing_mode,
             left_cheek_width,
             right_cheek_width,
+        )
+        set_status(
+            "done",
+            result_path=out_path,
+            bbox_shift_text=bbox_text,
+            message="",
+        )
+    except Exception as e:
+        set_status("error", message=str(e))
+
+
+def _run_realtime_job_background(
+    job_id: str,
+    audio_path: str,
+    video_path: str,
+    work_dir: str,
+    bbox_shift: float,
+    extra_margin: int,
+    parsing_mode: str,
+    left_cheek_width: int,
+    right_cheek_width: int,
+    prep_frames: int,
+    batch_size: int,
+    fps: int,
+    realtime_runner: Callable[..., tuple[str, str]],
+) -> None:
+    def set_status(status: str, **extra: Any) -> None:
+        with _JOBS_LOCK:
+            if job_id in _JOBS:
+                _JOBS[job_id]["status"] = status
+                for k, v in extra.items():
+                    _JOBS[job_id][k] = v
+
+    try:
+        set_status("processing")
+        out_path, bbox_text = realtime_runner(
+            work_dir,
+            video_path,
+            audio_path,
+            job_id,
+            bbox_shift,
+            extra_margin,
+            parsing_mode,
+            left_cheek_width,
+            right_cheek_width,
+            prep_frames,
+            batch_size,
+            fps,
         )
         set_status(
             "done",
