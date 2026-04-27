@@ -593,11 +593,11 @@ if svc_cfg.secured_mode:
     root_app = gr.mount_gradio_app(
         service_app,
         demo,
-        path="/",
+        path="",
         auth=(svc_cfg.gradio_username, svc_cfg.gradio_password),
     )
 else:
-    root_app = gr.mount_gradio_app(service_app, demo, path="/")
+    root_app = gr.mount_gradio_app(service_app, demo, path="")
 
 if args.share:
     print(
