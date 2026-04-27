@@ -22,7 +22,9 @@ pip install chumpy==0.70 --no-build-isolation
 pip install mmpose openmim --no-build-isolation
 pip install --no-cache-dir -U openmim
 mim install mmengine --no-build-isolation
-pip install mmcv==2.0.1 --no-build-isolation
+pip install mmcv==2.0.1 \
+  -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html \
+  --no-cache-dir
 mim install "mmdet==3.1.0" --no-build-isolation
 mim install "mmpose==1.1.0" --no-build-isolation
 #pip install -U "huggingface_hub[cli]"

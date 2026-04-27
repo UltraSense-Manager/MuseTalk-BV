@@ -106,7 +106,9 @@ RUN pip install chumpy==0.70 --no-build-isolation
 RUN pip install mmpose openmim --no-build-isolation
 RUN pip install --no-cache-dir -U openmim
 RUN mim install mmengine --no-build-isolation
-RUN pip install mmcv==2.0.1 --no-build-isolation
+RUN pip install mmcv==2.0.1 \
+  -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.0/index.html \
+  --no-cache-dir --no-build-isolation
 RUN mim install "mmdet==3.1.0" --no-build-isolation
 RUN mim install "mmpose==1.1.0" --no-build-isolation
 
