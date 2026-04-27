@@ -170,6 +170,7 @@ from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
+from musetalk.service.config import load_service_config
 
 
 def fast_check_ffmpeg():
@@ -181,8 +182,16 @@ def fast_check_ffmpeg():
 
 
 @torch.no_grad()
-def inference(audio_path, video_path, bbox_shift, extra_margin=10, parsing_mode="jaw", 
-              left_cheek_width=90, right_cheek_width=90, progress=gr.Progress(track_tqdm=True)):
+def inference(
+    audio_path,
+    video_path,
+    bbox_shift,
+    extra_margin=10,
+    parsing_mode="jaw",
+    left_cheek_width=90,
+    right_cheek_width=90,
+    progress=gr.Progress(track_tqdm=True),
+):
     # Set default parameters, aligned with inference.py
     args_dict = {
         "result_dir": './results/output', 
@@ -383,7 +392,7 @@ def inference(audio_path, video_path, bbox_shift, extra_margin=10, parsing_mode=
     os.remove("temp.mp4")
     #shutil.rmtree(result_img_save_path)
     print(f"result is save to {output_vid_name}")
-    return output_vid_name,bbox_shift_text
+    return output_vid_name, bbox_shift_text
 
 
 
@@ -561,10 +570,39 @@ if sys.platform == 'win32':
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Start Gradio application
-demo.queue().launch(
-    share=args.share, 
-    debug=True, 
-    server_name=args.ip, 
-    server_port=args.port
+from musetalk.service.api import create_service_app
+import uvicorn
+
+demo.queue()
+svc_cfg = load_service_config()
+if svc_cfg.secured_mode and (
+    not svc_cfg.gradio_username or not svc_cfg.gradio_password
+):
+    raise RuntimeError(
+        "SECURED_MODE is on but Gradio credentials are missing. "
+        "Set GRADIO_USER and GRADIO_PASS (recommended), or USER and PASS."
+    )
+
+service_app = create_service_app(inference, svc_cfg)
+if svc_cfg.secured_mode:
+    root_app = gr.mount_gradio_app(
+        service_app,
+        demo,
+        path="/",
+        auth=(svc_cfg.gradio_username, svc_cfg.gradio_password),
+    )
+else:
+    root_app = gr.mount_gradio_app(service_app, demo, path="/")
+
+if args.share:
+    print(
+        "Note: --share is not wired for the FastAPI+Gradio mount; use a tunnel (e.g. ngrok) "
+        "or expose --ip 0.0.0.0 behind a reverse proxy."
+    )
+
+uvicorn.run(
+    root_app,
+    host=args.ip,
+    port=int(args.port),
+    log_level="info",
 )

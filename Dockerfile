@@ -123,4 +123,4 @@ RUN sh inference.sh v1.5 normal
 EXPOSE 7860
 
 # Run the application.
-CMD python gradio_app.py --listen
+CMD python app.py --ip 0.0.0.0 --port 7860
