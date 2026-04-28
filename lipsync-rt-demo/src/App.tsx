@@ -1,0 +1,359 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  downloadJob,
+  pollUntilDone,
+  submitRealtimeJob,
+  submitStandardJob,
+} from "./api";
+import { puterAvailable, textToSpeechFile, validateTtsText } from "./tts";
+import "./App.css";
+
+const POLL_INTERVAL_MS = 2000;
+const JOB_DEADLINE_MS = 3600 * 1000;
+
+function videoFileKey(f: File | null): string | null {
+  if (!f) return null;
+  return `${f.name}:${f.size}:${f.lastModified}`;
+}
+
+export default function App() {
+  const [baseUrl, setBaseUrl] = useState("");
+  const [bearerToken, setBearerToken] = useState("");
+  const [ttsText, setTtsText] = useState("");
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
+
+  const [realtime, setRealtime] = useState(true);
+  const [prepFrames, setPrepFrames] = useState(30);
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [liveElapsedMs, setLiveElapsedMs] = useState(0);
+
+  const lastAvatarIdRef = useRef<string | null>(null);
+  const lastRealtimeVideoKeyRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const runStartRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!videoFile) {
+      setVideoObjectUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+    const url = URL.createObjectURL(videoFile);
+    setVideoObjectUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return url;
+    });
+    return () => URL.revokeObjectURL(url);
+  }, [videoFile]);
+
+  useEffect(() => {
+    if (!busy) return;
+    const id = window.setInterval(() => {
+      setLiveElapsedMs(performance.now() - runStartRef.current);
+    }, 100);
+    return () => clearInterval(id);
+  }, [busy]);
+
+  const displayElapsed =
+    busy && runStartRef.current ? liveElapsedMs / 1000 : elapsedMs !== null ? elapsedMs / 1000 : null;
+
+  const currentVideoKey = videoFileKey(videoFile);
+  const willReuseAvatar =
+    realtime &&
+    !!lastAvatarIdRef.current &&
+    !!currentVideoKey &&
+    lastRealtimeVideoKeyRef.current === currentVideoKey;
+
+  const validate = useCallback((): string | null => {
+    const base = baseUrl.trim();
+    if (!base) return "Enter the API base URL (e.g. http://127.0.0.1:7860).";
+    const normalized = base.startsWith("http") ? base : `http://${base}`;
+    try {
+      void new URL(normalized);
+    } catch {
+      return "API base URL is not valid.";
+    }
+    const ttsErr = validateTtsText(ttsText);
+    if (ttsErr) return ttsErr;
+    if (!puterAvailable()) return "Puter.js is still loading or blocked. Refresh the page.";
+    if (!realtime) {
+      if (!videoFile) return "Choose a reference video for standard mode.";
+      return null;
+    }
+    if (!willReuseAvatar && !videoFile) {
+      return "Choose a reference video (or reuse the same file as the last successful realtime run).";
+    }
+    return null;
+  }, [baseUrl, ttsText, videoFile, realtime, willReuseAvatar]);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+    const v = validate();
+    if (v) {
+      setError(v);
+      return;
+    }
+
+    const base = baseUrl.trim().startsWith("http")
+      ? baseUrl.trim()
+      : `http://${baseUrl.trim()}`;
+
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    setBusy(true);
+    runStartRef.current = performance.now();
+    setElapsedMs(null);
+    setLiveElapsedMs(0);
+
+    try {
+      setInfo("Synthesizing speech (Puter.js)…");
+      const audioFile = await textToSpeechFile(ttsText);
+
+      const commonForm: Record<string, string> = {
+        bbox_shift: "0",
+        extra_margin: "10",
+        parsing_mode: "jaw",
+        left_cheek_width: "90",
+        right_cheek_width: "90",
+      };
+
+      setInfo("Submitting job…");
+
+      if (!realtime) {
+        if (!videoFile) throw new Error("Missing video.");
+        const submit = await submitStandardJob(
+          base,
+          bearerToken,
+          audioFile,
+          videoFile,
+          commonForm,
+          ac.signal
+        );
+        setInfo(`Queued job ${submit.job_id}. Waiting…`);
+        await pollUntilDone(base, bearerToken, submit.job_id, {
+          intervalMs: POLL_INTERVAL_MS,
+          deadlineMs: JOB_DEADLINE_MS,
+          signal: ac.signal,
+          onTick: (b) => setInfo(`Status: ${b.status}…`),
+        });
+        setInfo("Downloading result…");
+        const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
+        lastAvatarIdRef.current = null;
+        lastRealtimeVideoKeyRef.current = null;
+        triggerBlobDownload(blob, "lipsync-output.mp4");
+      } else {
+        const prep = Math.min(200, Math.max(15, prepFrames));
+        const rtForm: Record<string, string> = {
+          ...commonForm,
+          realtime_prep_frames: String(prep),
+          realtime_batch_size: "20",
+          realtime_fps: "25",
+        };
+        const reuseId = willReuseAvatar ? lastAvatarIdRef.current! : "";
+        if (reuseId) rtForm.reuse_avatar_id = reuseId;
+
+        const videoForUpload = reuseId ? null : videoFile;
+
+        const submit = await submitRealtimeJob(
+          base,
+          bearerToken,
+          audioFile,
+          rtForm,
+          videoForUpload,
+          ac.signal
+        );
+
+        const aid = submit.avatar_id;
+        if (aid) setInfo(`Queued ${submit.job_id} (avatar_id=${aid}). Waiting…`);
+        else setInfo(`Queued ${submit.job_id}. Waiting…`);
+
+        const doneBody = await pollUntilDone(base, bearerToken, submit.job_id, {
+          intervalMs: POLL_INTERVAL_MS,
+          deadlineMs: JOB_DEADLINE_MS,
+          signal: ac.signal,
+          onTick: (b) => {
+            const av = b.avatar_id ? ` avatar_id=${b.avatar_id}` : "";
+            setInfo(`Status: ${b.status}${av}…`);
+          },
+        });
+
+        const finalAvatar = doneBody.avatar_id || submit.avatar_id;
+        setInfo("Downloading result…");
+        const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
+
+        if (finalAvatar) lastAvatarIdRef.current = finalAvatar;
+        if (!reuseId && videoFile) {
+          lastRealtimeVideoKeyRef.current = videoFileKey(videoFile);
+        }
+        triggerBlobDownload(blob, "lipsync-realtime-output.mp4");
+      }
+
+      const elapsed = performance.now() - runStartRef.current;
+      setElapsedMs(elapsed);
+      setInfo(`Done in ${(elapsed / 1000).toFixed(1)}s.`);
+    } catch (err) {
+      const msg =
+        err instanceof DOMException && err.name === "AbortError"
+          ? "Cancelled."
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      setError(msg);
+      setInfo(null);
+    } finally {
+      setBusy(false);
+      abortRef.current = null;
+    }
+  };
+
+  return (
+    <div className="app">
+      <h1>Lipsync demo</h1>
+      <p className="hint">
+        Driving audio comes from Puter.js TTS. Configure your MuseTalk API URL and bearer token
+        (same as <code>test.py</code>).
+      </p>
+
+      <form className="stack" onSubmit={onSubmit}>
+        <div className="field">
+          <label htmlFor="base">API base URL</label>
+          <input
+            id="base"
+            type="url"
+            autoComplete="off"
+            placeholder="http://127.0.0.1:7860"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            disabled={busy}
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="token">Bearer token (optional if server has none)</label>
+          <input
+            id="token"
+            type="password"
+            autoComplete="off"
+            placeholder="Paste token"
+            value={bearerToken}
+            onChange={(e) => setBearerToken(e.target.value)}
+            disabled={busy}
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="video">Reference video</label>
+          <input
+            id="video"
+            type="file"
+            accept="video/*"
+            disabled={busy}
+            onChange={(e) => setVideoFile(e.target.files?.[0] ?? null)}
+          />
+          {videoObjectUrl ? (
+            <video className="preview" src={videoObjectUrl} controls muted playsInline />
+          ) : null}
+        </div>
+
+        <div className="field">
+          <label htmlFor="tts">Text for TTS (Puter.js)</label>
+          <textarea
+            id="tts"
+            value={ttsText}
+            onChange={(e) => setTtsText(e.target.value)}
+            disabled={busy}
+            placeholder="Script to synthesize as driving audio…"
+          />
+        </div>
+
+        <div className="row">
+          <input
+            id="rt"
+            type="checkbox"
+            checked={realtime}
+            onChange={(e) => setRealtime(e.target.checked)}
+            disabled={busy}
+          />
+          <label htmlFor="rt">Realtime mode (POST /api/realtime/job)</label>
+        </div>
+
+        <div className={`field ${realtime ? "" : "dimmed"}`}>
+          <label htmlFor="prep">Realtime prep frames (first N frames)</label>
+          <div className="slider-row">
+            <input
+              id="prep"
+              type="range"
+              min={15}
+              max={200}
+              value={prepFrames}
+              onChange={(e) => setPrepFrames(Number(e.target.value))}
+              disabled={busy || !realtime}
+            />
+            <span className="value">{prepFrames}</span>
+          </div>
+          <p className="hint">
+            Backend clamps to 1–300. With realtime on, the same video file as your last successful
+            run sends <code>reuse_avatar_id</code> and skips re-uploading video.
+          </p>
+        </div>
+
+        {realtime && willReuseAvatar ? (
+          <p className="msg info">
+            Same video as last successful realtime job — request will reuse{" "}
+            <code>avatar_id</code> and omit the video part.
+          </p>
+        ) : null}
+
+        <div className="row">
+          <button className="btn" type="submit" disabled={busy}>
+            {busy ? "Working…" : "Run lipsync"}
+          </button>
+          {busy ? (
+            <button
+              type="button"
+              className="btn"
+              style={{ background: "#444" }}
+              onClick={() => abortRef.current?.abort()}
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+
+        {displayElapsed !== null ? (
+          <p className="stopwatch">Elapsed: {displayElapsed.toFixed(1)}s</p>
+        ) : null}
+
+        {error ? (
+          <div className="msg error" role="alert">
+            {error}
+          </div>
+        ) : null}
+        {info && !error ? <div className="msg info">{info}</div> : null}
+      </form>
+    </div>
+  );
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

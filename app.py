@@ -635,6 +635,7 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from musetalk.service.api import create_service_app
+from starlette.middleware.cors import CORSMiddleware
 import uvicorn
 
 demo.queue()
@@ -659,6 +660,13 @@ if svc_cfg.secured_mode:
     )
 else:
     root_app = gr.mount_gradio_app(service_app, demo, path="")
+
+root_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 if args.share:
     print(
