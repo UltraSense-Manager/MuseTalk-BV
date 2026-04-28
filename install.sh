@@ -77,5 +77,7 @@ curl -L https://download.pytorch.org/models/resnet18-5c106cde.pth \
   
   
 sh inference.sh v1.5 normal
+echo "✅ Installation successful! Starting app..."
+python app.py --use_float16 --ip 0.0.0.0 --port 7860
 
-echo "✅ Installation successful!"
+
