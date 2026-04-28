@@ -6,9 +6,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import jwt
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
 from musetalk.service.mux_demux import demux_muxed_mp4
@@ -35,12 +37,49 @@ def _require_bearer(
     cfg: ServiceConfig,
     creds: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> None:
-    if not cfg.bearer_token:
-        return
+    _resolve_user_id(cfg, creds)
+
+
+def _resolve_user_id(
+    cfg: ServiceConfig,
+    creds: HTTPAuthorizationCredentials | None,
+) -> str:
+    """
+    Auth rules:
+    1) Admin override: Authorization Bearer == BEARER_TOKEN.
+    2) Otherwise, decode JWT using JWT_SECRET / JWT_ALGORITHM and use sub|uid as user_id.
+    """
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
-    if creds.credentials != cfg.bearer_token:
+    token = (creds.credentials or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing or invalid bearer token")
+
+    if cfg.bearer_token and token == cfg.bearer_token:
+        # Admin path still enabled via BEARER_TOKEN.
+        return "admin"
+
+    if not cfg.jwt_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid bearer token (JWT auth not configured)",
+        )
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            cfg.jwt_secret,
+            algorithms=[cfg.jwt_algorithm],
+            options={"require": ["exp"]},
+        )
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    user_id = str(payload.get("sub") or payload.get("uid") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing uid/sub claim")
+    return user_id
 
 
 def create_service_app(
@@ -54,6 +93,11 @@ def create_service_app(
         creds: HTTPAuthorizationCredentials | None = Depends(security),
     ) -> None:
         _require_bearer(cfg, creds)
+
+    def auth_user_dep(
+        creds: HTTPAuthorizationCredentials | None = Depends(security),
+    ) -> str:
+        return _resolve_user_id(cfg, creds)
 
     app = FastAPI(title="MuseTalk Service", version="1.0")
 
@@ -205,7 +249,7 @@ def create_service_app(
         async def create_realtime_job(
             audio: UploadFile = File(..., description="Driving audio"),
             video: Optional[UploadFile] = File(
-                None, description="Reference video (required unless reuse_avatar_id)"
+                None, description="Reference video (required unless use_clone=true)"
             ),
             bbox_shift: float = Form(0),
             extra_margin: int = Form(10),
@@ -215,37 +259,42 @@ def create_service_app(
             realtime_prep_frames: int = Form(30),
             realtime_batch_size: int = Form(20),
             realtime_fps: int = Form(25),
-            reuse_avatar_id: str = Form(
-                "",
-                description="If set, skip video prep and reuse persisted avatar materials",
+            clone_id: Optional[str] = Form(
+                None,
+                description="Optional clone/user id. If null, uses JWT uid/sub.",
             ),
+            use_clone: bool = Form(
+                False,
+                description="If true, skip video prep and reuse persisted clone materials.",
+            ),
+            user_id: str = Depends(auth_user_dep),
         ) -> JSONResponse:
             prep = max(1, min(300, int(realtime_prep_frames)))
             bs = max(1, min(128, int(realtime_batch_size)))
             fps = max(1, min(60, int(realtime_fps)))
 
-            reuse = (reuse_avatar_id or "").strip()
-            if reuse:
-                if not _valid_contract_job_id(reuse):
-                    raise HTTPException(
-                        status_code=400, detail="invalid reuse_avatar_id"
-                    )
-                av_dir = _job_root() / "realtime_avatars" / reuse
+            requested_clone = (clone_id or "").strip()
+            if requested_clone and not _valid_contract_job_id(requested_clone):
+                raise HTTPException(status_code=400, detail="invalid clone_id")
+            persist_user_id = requested_clone or user_id
+            if not _valid_contract_job_id(persist_user_id):
+                raise HTTPException(status_code=400, detail="invalid resolved user_id")
+
+            if use_clone:
+                av_dir = _job_root() / "realtime_avatars" / persist_user_id
                 if not (av_dir / "latents.pt").is_file():
                     raise HTTPException(
                         status_code=404,
-                        detail=f"unknown or incomplete avatar_id: {reuse!r}",
+                        detail=f"unknown or incomplete clone_id/user_id: {persist_user_id!r}",
                     )
-                persist_avatar_id = reuse
                 is_reuse = True
                 video_disk_path: str | None = None
             else:
                 if video is None:
                     raise HTTPException(
                         status_code=400,
-                        detail="video is required unless reuse_avatar_id is set",
+                        detail="video is required unless use_clone is true",
                     )
-                persist_avatar_id = str(uuid.uuid4())
                 is_reuse = False
                 video_suffix = Path(video.filename or "video.mp4").suffix or ".mp4"
                 video_disk_path = f"input_video{video_suffix}"
@@ -274,8 +323,10 @@ def create_service_app(
                     "message": "",
                     "kind": "realtime",
                     "realtime_prep_frames": prep,
-                    "avatar_id": persist_avatar_id,
+                    "user_id": persist_user_id,
+                    "clone_id": persist_user_id,
                     "reuse_avatar": is_reuse,
+                    "use_clone": is_reuse,
                 }
 
             threading.Thread(
@@ -285,7 +336,7 @@ def create_service_app(
                     str(audio_path),
                     video_str,
                     str(work),
-                    persist_avatar_id,
+                    persist_user_id,
                     is_reuse,
                     bbox_shift,
                     extra_margin,
@@ -303,11 +354,12 @@ def create_service_app(
                 status_code=202,
                 content={
                     "job_id": job_id,
-                    "avatar_id": persist_avatar_id,
+                    "user_id": persist_user_id,
+                    "clone_id": persist_user_id,
                     "status": "queued",
                     "kind": "realtime",
                     "realtime_prep_frames": prep,
-                    "reuse_avatar": is_reuse,
+                    "use_clone": is_reuse,
                 },
             )
 
@@ -324,8 +376,10 @@ def create_service_app(
         }
         if info.get("kind"):
             out["kind"] = info["kind"]
-        if info.get("avatar_id"):
-            out["avatar_id"] = info["avatar_id"]
+        if info.get("user_id"):
+            out["user_id"] = info["user_id"]
+        if info.get("clone_id"):
+            out["clone_id"] = info["clone_id"]
         if info["status"] == "done":
             out["bbox_shift_text"] = info.get("bbox_shift_text", "")
         return out
@@ -477,7 +531,8 @@ def _run_realtime_job_background(
             result_path=out_path,
             bbox_shift_text=bbox_text,
             message="",
-            avatar_id=persist_avatar_id,
+            user_id=persist_avatar_id,
+            clone_id=persist_avatar_id,
         )
     except Exception as e:
         set_status("error", message=str(e))

@@ -13,7 +13,9 @@ The Gradio UI and HTTP API share one process (`app.py`). FastAPI (Uvicorn) serve
 | `GRADIO_PASS` | If `SECURED_MODE` on | Gradio login password. |
 | `USER` | Fallback | Used as username only if `GRADIO_USER` is empty. On Unix, `USER` is often already set to your shell login—prefer `GRADIO_USER` in production. |
 | `PASS` | Fallback | Used as password if `GRADIO_PASS` is empty. |
-| `BEARER_TOKEN` | No | If set, `/api/job*`, `/api/realtime/job`, `POST /job`, and `GET /job` require `Authorization: Bearer <token>`. If unset, those routes are open (suitable only for trusted networks). |
+| `BEARER_TOKEN` | No | Admin override bearer token. If request token equals this value, API access is allowed. |
+| `JWT_SECRET` | Conditional | Required for non-admin bearer auth. Used to verify JWT signatures for `/api/job*`, `/api/realtime/job`, `POST /job`, and `GET /job`. |
+| `JWT_ALGORITHM` | No | JWT algorithm (default `HS256`). |
 | `GPU_MULTIPART_FIELD` | No | Multipart **field name** that **clients** must use when `POST`ing the muxed file to **this** server (default `file`). |
 | `API_JOB_DIR` | No | Directory for per-job uploads and metadata (default `./results/api_jobs`). |
 
@@ -76,16 +78,24 @@ Base URL: same host/port as the app (e.g. `http://127.0.0.1:7860`).
 
 Same job lifecycle as `/api/job` (`GET /api/job/{job_id}`, `/download`). Uses MuseTalk’s **realtime** path: the first **`realtime_prep_frames`** frames (default **30**) are extracted from the uploaded video with **ffmpeg**, then avatar preparation (landmarks, latents, masks) and batched inference (as in `scripts/realtime_inference.py`), then ffmpeg muxes frames + driving audio.
 
-Prepared materials are stored under **`{API_JOB_DIR}/realtime_avatars/{avatar_id}/`** so you can run again **without** re-uploading video or re-running prep.
+Prepared materials are stored under **`{API_JOB_DIR}/realtime_avatars/{user_id}/`** so you can run again **without** re-uploading video or re-running prep.
 
-- `POST /api/realtime/job` — multipart **`audio`** (required). **`video`** required for a **new** avatar; omit **`video`** when reusing (see `reuse_avatar_id`).
+- `POST /api/realtime/job` — multipart **`audio`** (required). **`video`** required for a **new** prep run; omit **`video`** when reusing (see `use_clone=true`).
   - Same tuning as `/api/job`: `bbox_shift`, `extra_margin`, `parsing_mode`, `left_cheek_width`, `right_cheek_width`
-  - `realtime_prep_frames` (int, default `30`, clamped 1–300) — used only when **not** reusing
+  - `realtime_prep_frames` (int, default `30`, clamped 1–300) — used only when `use_clone=false`
   - `realtime_batch_size` (int, default `20`, clamped 1–128)
   - `realtime_fps` (int, default `25`, clamped 1–60)
-  - **`reuse_avatar_id`** (form string, optional) — if set to an existing `avatar_id`, skips video and prep; loads latents/masks from `realtime_avatars/{reuse_avatar_id}/` and only runs inference for the new audio. Must match `^[a-zA-Z0-9._-]+$` (same as contract job ids).
-- Response **`202`** JSON includes `job_id`, **`avatar_id`** (persisted id for this avatar; use as `reuse_avatar_id` later), `"kind": "realtime"`, `realtime_prep_frames`, and `reuse_avatar` (`true` when you passed `reuse_avatar_id`).
-- **`GET /api/job/{job_id}`** includes `avatar_id` for realtime jobs when known.
+  - **`use_clone`** (form boolean, default `false`) — if `true`, skips video prep and loads latents/masks from persisted clone materials.
+  - **`clone_id`** (form string, optional) — clone identifier to use. If omitted/null, server resolves to decoded JWT `sub`/`uid`. Must match `^[a-zA-Z0-9._-]+$`.
+- Response **`202`** JSON includes `job_id`, `user_id`, `clone_id`, `"kind": "realtime"`, `realtime_prep_frames`, and `use_clone`.
+- **`GET /api/job/{job_id}`** includes `user_id` and `clone_id` for realtime jobs when known.
+
+### Auth behavior (API routes)
+
+- Requests must send `Authorization: Bearer <token>`.
+- If token exactly equals `BEARER_TOKEN`, request is accepted via admin override.
+- Otherwise, token is validated as JWT using `JWT_SECRET` + `JWT_ALGORITHM`, requiring `exp`.
+- Realtime clone default identity comes from JWT (`sub`, fallback `uid`) when `clone_id` is not provided.
 
 ### Example: worker-style call (curl)
 

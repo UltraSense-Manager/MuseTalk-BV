@@ -32,7 +32,7 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
 
-  const lastAvatarIdRef = useRef<string | null>(null);
+  const lastCloneIdRef = useRef<string | null>(null);
   const lastRealtimeVideoKeyRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runStartRef = useRef<number>(0);
@@ -65,9 +65,9 @@ export default function App() {
     busy && runStartRef.current ? liveElapsedMs / 1000 : elapsedMs !== null ? elapsedMs / 1000 : null;
 
   const currentVideoKey = videoFileKey(videoFile);
-  const willReuseAvatar =
+  const willReuseClone =
     realtime &&
-    !!lastAvatarIdRef.current &&
+    !!lastCloneIdRef.current &&
     !!currentVideoKey &&
     lastRealtimeVideoKeyRef.current === currentVideoKey;
 
@@ -87,11 +87,11 @@ export default function App() {
       if (!videoFile) return "Choose a reference video for standard mode.";
       return null;
     }
-    if (!willReuseAvatar && !videoFile) {
+    if (!willReuseClone && !videoFile) {
       return "Choose a reference video (or reuse the same file as the last successful realtime run).";
     }
     return null;
-  }, [baseUrl, ttsText, videoFile, realtime, willReuseAvatar]);
+  }, [baseUrl, ttsText, videoFile, realtime, willReuseClone]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,7 +149,7 @@ export default function App() {
         });
         setInfo("Downloading result…");
         const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
-        lastAvatarIdRef.current = null;
+        lastCloneIdRef.current = null;
         lastRealtimeVideoKeyRef.current = null;
         triggerBlobDownload(blob, "lipsync-output.mp4");
       } else {
@@ -160,8 +160,13 @@ export default function App() {
           realtime_batch_size: "20",
           realtime_fps: "25",
         };
-        const reuseId = willReuseAvatar ? lastAvatarIdRef.current! : "";
-        if (reuseId) rtForm.reuse_avatar_id = reuseId;
+        const reuseId = willReuseClone ? lastCloneIdRef.current! : "";
+        if (reuseId) {
+          rtForm.use_clone = "true";
+          rtForm.clone_id = reuseId;
+        } else {
+          rtForm.use_clone = "false";
+        }
 
         const videoForUpload = reuseId ? null : videoFile;
 
@@ -174,8 +179,8 @@ export default function App() {
           ac.signal
         );
 
-        const aid = submit.avatar_id;
-        if (aid) setInfo(`Queued ${submit.job_id} (avatar_id=${aid}). Waiting…`);
+        const cid = submit.clone_id || submit.user_id;
+        if (cid) setInfo(`Queued ${submit.job_id} (clone_id=${cid}). Waiting…`);
         else setInfo(`Queued ${submit.job_id}. Waiting…`);
 
         const doneBody = await pollUntilDone(base, bearerToken, submit.job_id, {
@@ -183,16 +188,17 @@ export default function App() {
           deadlineMs: JOB_DEADLINE_MS,
           signal: ac.signal,
           onTick: (b) => {
-            const av = b.avatar_id ? ` avatar_id=${b.avatar_id}` : "";
-            setInfo(`Status: ${b.status}${av}…`);
+            const av = b.clone_id || b.user_id;
+            const avs = av ? ` clone_id=${av}` : "";
+            setInfo(`Status: ${b.status}${avs}…`);
           },
         });
 
-        const finalAvatar = doneBody.avatar_id || submit.avatar_id;
+        const finalClone = doneBody.clone_id || doneBody.user_id || submit.clone_id || submit.user_id;
         setInfo("Downloading result…");
         const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
 
-        if (finalAvatar) lastAvatarIdRef.current = finalAvatar;
+        if (finalClone) lastCloneIdRef.current = finalClone;
         if (!reuseId && videoFile) {
           lastRealtimeVideoKeyRef.current = videoFileKey(videoFile);
         }
@@ -304,14 +310,14 @@ export default function App() {
           </div>
           <p className="hint">
             Backend clamps to 1–300. With realtime on, the same video file as your last successful
-            run sends <code>reuse_avatar_id</code> and skips re-uploading video.
+            run sends <code>clone_id</code> + <code>use_clone=true</code> and skips re-uploading video.
           </p>
         </div>
 
-        {realtime && willReuseAvatar ? (
+        {realtime && willReuseClone ? (
           <p className="msg info">
             Same video as last successful realtime job — request will reuse{" "}
-            <code>avatar_id</code> and omit the video part.
+            <code>clone_id</code> and omit the video part.
           </p>
         ) : null}
 

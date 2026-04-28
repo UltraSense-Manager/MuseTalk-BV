@@ -119,7 +119,8 @@ USER appuser
 
 RUN ls 
 #Test run
-RUN sh inference.sh v1.5 normal
+#RUN sh inference.sh v1.5 normal
+RUN python3 voice-cloner/decompressor.py voice-cloner/master.json -o voice-cloner/checkpoints.zip && unzip voice-cloner/checkpoints.zip -d voice-cloner  
 
 # Expose the port that the application listens on.
 EXPOSE 7860

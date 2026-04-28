@@ -4,7 +4,7 @@ End-to-end checks for the MuseTalk HTTP API.
 
 Modes:
   standard (default) — POST /api/job, poll, download
-  realtime           — POST /api/realtime/job (first N frames prep), poll, download
+  realtime           — POST /api/realtime/job (first N frames prep or clone reuse), poll, download
 
 Requires: requests, test audio + video (see --audio / --video).
 
@@ -141,8 +141,9 @@ def _handle_submit_response(r: requests.Response) -> tuple[int, str | None]:
         print(f"error: no job_id in response: {payload}", file=sys.stderr)
         return 1, None
     extra = f" kind={payload.get('kind', '')!r}"
-    if payload.get("avatar_id"):
-        extra += f" avatar_id={payload.get('avatar_id')!r}"
+    clone = payload.get("clone_id") or payload.get("user_id")
+    if clone:
+        extra += f" clone_id={clone!r}"
     print(f"job_id={job_id} status={payload.get('status', '')}{extra}")
     return 0, job_id
 
@@ -185,8 +186,8 @@ def _poll_until_done(
             print(f"error: job failed: {body.get('message', body)}", file=sys.stderr)
             return 1
 
-        av = body.get("avatar_id")
-        avs = f" avatar_id={av!r}" if av else ""
+        av = body.get("clone_id") or body.get("user_id")
+        avs = f" clone_id={av!r}" if av else ""
         print(f"  status={status!r} kind={body.get('kind', '')!r}{avs} …")
         time.sleep(poll_interval)
     print("error: timed out waiting for job", file=sys.stderr)
@@ -402,20 +403,25 @@ def main() -> int:
         help="right_cheek_width form field",
     )
     parser.add_argument(
-        "--reuse-avatar-id",
+        "--clone-id",
         default="",
-        help="Realtime: POST reuse_avatar_id (skip video; new job_id, same persisted avatar)",
+        help="Realtime: POST clone_id (optional; if unset server can infer from JWT uid/sub)",
+    )
+    parser.add_argument(
+        "--use-clone",
+        action="store_true",
+        help="Realtime: POST use_clone=true to skip video and reuse persisted clone materials",
     )
 
     args = parser.parse_args()
 
     base = args.base_url.rstrip("/")
     audio_path = _resolve_path(args.audio)
-    reuse_av = ""
+    clone_id = ""
     if args.mode == "realtime":
-        reuse_av = (args.reuse_avatar_id or "").strip()
+        clone_id = (args.clone_id or "").strip()
     video_path: Optional[str] = None
-    if not reuse_av:
+    if not args.use_clone:
         video_path = _resolve_path(args.video)
     out = args.out or (
         "test_realtime_output.mp4"
@@ -426,7 +432,7 @@ def main() -> int:
     if not os.path.isfile(audio_path):
         print(f"error: missing audio file: {audio_path}", file=sys.stderr)
         return 1
-    if not reuse_av:
+    if not args.use_clone:
         if not video_path or not os.path.isfile(video_path):
             print(
                 f"error: missing video file: {video_path or args.video}",
@@ -465,8 +471,9 @@ def main() -> int:
         "realtime_batch_size": str(args.realtime_batch_size),
         "realtime_fps": str(args.realtime_fps),
     }
-    if reuse_av:
-        rt_form["reuse_avatar_id"] = reuse_av
+    rt_form["use_clone"] = "true" if args.use_clone else "false"
+    if clone_id:
+        rt_form["clone_id"] = clone_id
     return run_realtime_job(
         base,
         headers,

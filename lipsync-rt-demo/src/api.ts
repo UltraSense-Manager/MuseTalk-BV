@@ -4,9 +4,10 @@ export type JobSubmitResponse = {
   job_id: string;
   status?: string;
   kind?: string;
-  avatar_id?: string;
+  user_id?: string;
+  clone_id?: string;
   realtime_prep_frames?: number;
-  reuse_avatar?: boolean;
+  use_clone?: boolean;
 };
 
 export type JobStatusBody = {
@@ -14,7 +15,8 @@ export type JobStatusBody = {
   status: string;
   message?: string;
   kind?: string;
-  avatar_id?: string;
+  user_id?: string;
+  clone_id?: string;
 };
 
 export function authHeaders(token: string): HeadersInit {

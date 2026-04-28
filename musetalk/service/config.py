@@ -12,6 +12,8 @@ def _env_truthy(name: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class ServiceConfig:
     bearer_token: str | None
+    jwt_secret: str | None
+    jwt_algorithm: str
     secured_mode: bool
     gradio_username: str | None
     gradio_password: str | None
@@ -20,6 +22,8 @@ class ServiceConfig:
 
 def load_service_config() -> ServiceConfig:
     token = os.environ.get("BEARER_TOKEN", "").strip()
+    jwt_secret = os.environ.get("JWT_SECRET", "").strip()
+    jwt_algorithm = os.environ.get("JWT_ALGORITHM", "HS256").strip() or "HS256"
     field = os.environ.get("GPU_MULTIPART_FIELD", "file").strip() or "file"
 
     secured = _env_truthy("SECURED_MODE", default=False)
@@ -38,6 +42,8 @@ def load_service_config() -> ServiceConfig:
 
     return ServiceConfig(
         bearer_token=token or None,
+        jwt_secret=jwt_secret or None,
+        jwt_algorithm=jwt_algorithm,
         secured_mode=secured,
         gradio_username=user,
         gradio_password=password,

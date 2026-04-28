@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Cloner Test</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://js.puter.com/v2/"></script>
+</head>
+<body>
+  <div class="container">
+    <h1>Voice Cloner Test Frontend</h1>
+
+    <section class="card">
+      <h2>Config</h2>
+      <label>
+        API base URL
+        <input id="apiBase" type="text" value="http://localhost:8971" placeholder="http://localhost:8000" />
+      </label>
+      <label>
+        JWT (Bearer token)
+        <textarea id="jwt" rows="3" placeholder="Paste your test JWT"></textarea>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>State (REST)</h2>
+      <button id="getState" type="button">Get state</button>
+      <pre id="stateDisplay">—</pre>
+    </section>
+
+    <section class="card">
+      <h2>Train from mic (WebSocket)</h2>
+      <p class="hint">Streams base64 PCM from your microphone; training accumulates up to 20s.</p>
+      <div id="stopwatch" class="stopwatch" aria-live="polite">0:00.0</div>
+      <button id="trainStart" type="button">Start training (mic)</button>
+      <button id="trainStop" type="button" disabled>Stop</button>
+      <p id="trainStatus" class="status"></p>
+    </section>
+
+    <section class="card">
+      <h2>Clone (TTS or upload → WebSocket)</h2>
+      <p class="hint">TTS uses <a href="https://developer.puter.com/tutorials/free-unlimited-text-to-speech-api/" target="_blank" rel="noopener">Puter.js</a> (no tab capture). Or upload an audio file as the base to clone.</p>
+      <label>
+        Base audio: upload file (optional)
+        <input id="cloneFile" type="file" accept="audio/*,.wav" />
+      </label>
+      <label>
+        Or TTS text (Puter.js will generate speech)
+        <input id="ttsText" type="text" value="Hello, this is a test of the voice cloner." placeholder="Text to speak" />
+      </label>
+      <button id="ttsClone" type="button">Clone (TTS or uploaded file)</button>
+      <button id="playOriginalTts" type="button">Play original TTS (no clone)</button>
+      <p id="cloneStatus" class="status"></p>
+      <p class="hint" style="margin-top: 0.5rem;">Original TTS (for comparison):</p>
+      <audio id="originalTtsAudio" controls style="margin-top: 0.25rem;"></audio>
+      <p class="hint" style="margin-top: 0.5rem;">Cloned output:</p>
+      <audio id="cloneAudio" controls style="margin-top: 0.25rem;"></audio>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

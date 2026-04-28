@@ -1,0 +1,29 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Git and IDE
+.git
+.gitignore
+.cursor
+.pytest_cache
+*.egg-info
+__pycache__
+*.pyc
+.venv
+venv
+
+# Test and frontend (not needed for API image)
+test-frontend
+test.py
+
+# Docs and misc
+README.md
+*.md
+!openvoice/**/*.md
+
+# Large or generated (keep checkpoints_v2 for converter)
+outputs_v2
+processed
+*.wav

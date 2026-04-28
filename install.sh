@@ -77,6 +77,7 @@ curl -L https://download.pytorch.org/models/resnet18-5c106cde.pth \
   
   
 sh inference.sh v1.5 normal
+python3 voice-cloner/decompressor.py voice-cloner/master.json -o voice-cloner/checkpoints.zip && unzip voice-cloner/checkpoints.zip -d voice-cloner  
 echo "✅ Installation successful! Starting app..."
 python app.py --use_float16 --ip 0.0.0.0 --port 7860
 
