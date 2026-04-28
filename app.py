@@ -361,10 +361,26 @@ def inference(
     for file in files:
         filename = os.path.join(result_img_save_path, file)
         images.append(imageio.imread(filename))
-        
+    
+    if not images:
+        raise RuntimeError(
+            f"No output frames were generated in {result_img_save_path}; cannot encode video."
+        )
+
+    # imageio/ffmpeg requires all frames to have identical HxW.
+    target_h, target_w = images[0].shape[:2]
+    normalized_images = []
+    for idx, img in enumerate(images):
+        if img.shape[:2] != (target_h, target_w):
+            print(
+                f"warning: frame size mismatch at index {idx}: "
+                f"{img.shape[:2]} -> {(target_h, target_w)}"
+            )
+            img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        normalized_images.append(img)
 
     # Save video
-    imageio.mimwrite(output_video, images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
+    imageio.mimwrite(output_video, normalized_images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
 
     input_video = './temp.mp4'
     # Check if the input_video and audio_path exist
@@ -378,7 +394,7 @@ def inference(
     fps = reader.get_meta_data()['fps']  # Get original video frame rate
     reader.close() # Otherwise, error on win11: PermissionError: [WinError 32] Another program is using this file, process cannot access. : 'temp.mp4'
     # Store frames in list
-    frames = images
+    frames = normalized_images
     
     print(len(frames))
 
