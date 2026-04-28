@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import threading
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -442,6 +443,8 @@ def _run_contract_muxed_job(
             message="",
         )
     except Exception as e:
+        print(f"[job {job_id}] contract mux job failed: {e}", flush=True)
+        traceback.print_exc()
         set_status("error", message=str(e))
 
 
@@ -481,6 +484,8 @@ def _run_job_background(
             message="",
         )
     except Exception as e:
+        print(f"[job {job_id}] /api/job failed: {e}", flush=True)
+        traceback.print_exc()
         set_status("error", message=str(e))
 
 
@@ -535,4 +540,6 @@ def _run_realtime_job_background(
             clone_id=persist_avatar_id,
         )
     except Exception as e:
+        print(f"[job {job_id}] /api/realtime/job failed: {e}", flush=True)
+        traceback.print_exc()
         set_status("error", message=str(e))

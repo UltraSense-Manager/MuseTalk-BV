@@ -18,6 +18,7 @@ import requests
 
 import argparse
 import os
+import traceback
 from omegaconf import OmegaConf
 import numpy as np
 import cv2
@@ -336,7 +337,9 @@ def inference(
         y2 = min(y2, frame.shape[0])
         try:
             res_frame = cv2.resize(res_frame.astype(np.uint8),(x2-x1,y2-y1))
-        except:
+        except Exception as e:
+            print(f"[inference] resize failed frame {i}: {e}", flush=True)
+            traceback.print_exc()
             continue
         
         # Use v15 version blending
