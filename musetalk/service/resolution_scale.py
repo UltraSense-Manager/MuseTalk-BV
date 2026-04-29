@@ -82,10 +82,14 @@ def downscale_png_dir_inplace(
             "-y",
             "-v",
             "warning",
+            "-start_number",
+            "0",
             "-i",
             os.path.join(dir_path, "%08d.png"),
             "-vf",
             f"scale={new_w}:{new_h}:flags=area",
+            "-start_number",
+            "0",
             os.path.join(tmp_dir, "%08d.png"),
         ],
         capture_output=True,
@@ -103,6 +107,10 @@ def downscale_png_dir_inplace(
     for p in scaled:
         os.replace(p, os.path.join(dir_path, os.path.basename(p)))
     os.rmdir(tmp_dir)
+    if not os.path.exists(os.path.join(dir_path, "00000000.png")):
+        raise RuntimeError(
+            "downscale output missing 00000000.png; frame numbering was not preserved"
+        )
     return (full_w, full_h)
 
 
