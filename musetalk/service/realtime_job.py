@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,8 @@ class RealtimeJobContext:
     device: torch.device
     weight_dtype: torch.dtype
     timesteps: torch.Tensor
+    cpu_workers: int = 2
+    enable_parallel_realtime_prep: bool = False
 
 
 class RealtimeAvatar:
@@ -212,25 +215,43 @@ class RealtimeAvatar:
         self.frame_list_cycle = frame_list + frame_list[::-1]
         self.coord_list_cycle = coord_list + coord_list[::-1]
         self.input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
-        self.mask_coords_list_cycle = []
-        self.mask_list_cycle = []
+        total_cycle = len(self.frame_list_cycle)
+        self.mask_coords_list_cycle = [None] * total_cycle
+        self.mask_list_cycle = [None] * total_cycle
 
-        for i, frame in enumerate(tqdm(self.frame_list_cycle, desc="masks")):
+        def _build_mask_item(i: int) -> tuple[int, Any, Any]:
+            frame = self.frame_list_cycle[i]
             cv2.imwrite(f"{self.full_imgs_path}/{str(i).zfill(8)}.png", frame)
-
             x1, y1, x2, y2 = self.coord_list_cycle[i]
             mode = self.ctx.parsing_mode if self.ctx.version == "v15" else "raw"
             mask, crop_box = get_image_prepare_material(
                 frame, [x1, y1, x2, y2], fp=self.ctx.fp, mode=mode
             )
-
             cv2.imwrite(f"{self.mask_out_path}/{str(i).zfill(8)}.png", mask)
-            self.mask_coords_list_cycle += [crop_box]
-            self.mask_list_cycle.append(mask)
+            return i, mask, crop_box
+
+        if self.ctx.enable_parallel_realtime_prep and self.ctx.cpu_workers > 1:
+            with ThreadPoolExecutor(max_workers=self.ctx.cpu_workers) as pool:
+                for i, mask, crop_box in tqdm(
+                    pool.map(_build_mask_item, range(total_cycle)),
+                    total=total_cycle,
+                    desc="masks(parallel)",
+                ):
+                    self.mask_coords_list_cycle[i] = crop_box
+                    self.mask_list_cycle[i] = mask
+            parallel_mode = True
+        else:
+            for i in tqdm(range(total_cycle), desc="masks"):
+                j, mask, crop_box = _build_mask_item(i)
+                self.mask_coords_list_cycle[j] = crop_box
+                self.mask_list_cycle[j] = mask
+            parallel_mode = False
         mark(
             "masks_blend_prep_writes",
             n_cycle_frames=len(self.frame_list_cycle),
             n_masks=len(self.mask_list_cycle),
+            parallel=parallel_mode,
+            workers=self.ctx.cpu_workers if parallel_mode else 1,
         )
 
         with open(self.mask_coords_path, "wb") as f:
@@ -546,6 +567,8 @@ def run_realtime_job(
         device=ctx.device,
         weight_dtype=ctx.weight_dtype,
         timesteps=ctx.timesteps,
+        cpu_workers=ctx.cpu_workers,
+        enable_parallel_realtime_prep=ctx.enable_parallel_realtime_prep,
     )
     mark_job("context_clone_fp_ready")
 

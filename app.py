@@ -3,6 +3,7 @@ import time
 import pdb
 import re
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -239,6 +240,12 @@ def inference(
         "right_cheek_width": right_cheek_width
     }
     args = Namespace(**args_dict)
+    cfg = globals().get("svc_cfg")
+    cpu_workers = max(1, int(getattr(cfg, "cpu_workers", 2)))
+    enable_parallel_blend = bool(getattr(cfg, "enable_parallel_blend", False))
+    enable_audio_frame_overlap = bool(
+        getattr(cfg, "enable_parallel_audio_frame_overlap", True)
+    )
 
     # Check ffmpeg
     if not fast_check_ffmpeg():
@@ -315,19 +322,28 @@ def inference(
     )
 
     ############################################## extract audio feature ##############################################
-    # Extract audio features
-    whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
-    whisper_chunks = audio_processor.get_whisper_chunk(
-        whisper_input_features, 
-        device, 
-        weight_dtype, 
-        whisper, 
-        librosa_length,
-        fps=fps,
-        audio_padding_length_left=args.audio_padding_length_left,
-        audio_padding_length_right=args.audio_padding_length_right,
-    )
-    _mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks))
+    def _audio_prep() -> list:
+        whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
+        return audio_processor.get_whisper_chunk(
+            whisper_input_features,
+            device,
+            weight_dtype,
+            whisper,
+            librosa_length,
+            fps=fps,
+            audio_padding_length_left=args.audio_padding_length_left,
+            audio_padding_length_right=args.audio_padding_length_right,
+        )
+
+    audio_future = None
+    audio_pool = None
+    if enable_audio_frame_overlap:
+        audio_pool = ThreadPoolExecutor(max_workers=1)
+        audio_future = audio_pool.submit(_audio_prep)
+        _mark("whisper_audio_submitted", overlap=True)
+    else:
+        whisper_chunks = _audio_prep()
+        _mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks), overlap=False)
 
     ############################################## preprocess input image  ##############################################
     if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
@@ -370,6 +386,13 @@ def inference(
         input_latent_list.append(latents)
     _mark("vae_encode_face_crops", n_latents=len(input_latent_list))
 
+    if audio_future is not None:
+        try:
+            whisper_chunks = audio_future.result()
+        finally:
+            audio_pool.shutdown(wait=True)
+        _mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks), overlap=True)
+
     # to smooth the first and the last frame
     frame_list_cycle = frame_list + frame_list[::-1]
     coord_list_cycle = coord_list + coord_list[::-1]
@@ -400,7 +423,8 @@ def inference(
 
     ############################################## pad to full image ##############################################
     print("pad talking image to original video", flush=True)
-    for i, res_frame in enumerate(tqdm(res_frame_list)):
+
+    def _blend_and_write(i: int, res_frame) -> bool:
         bbox = coord_list_cycle[i%(len(coord_list_cycle))]
         ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])
         try:
@@ -408,7 +432,7 @@ def inference(
             x1, y1, x2, y2 = map(int, [round(x1f), round(y1f), round(x2f), round(y2f)])
         except Exception as e:
             print(f"[inference] invalid bbox at frame {i}: {bbox!r} ({e})", flush=True)
-            continue
+            return False
 
         y2 = y2 + int(args.extra_margin)
         # Clamp bbox into current frame bounds and ensure at least 2x2 crop.
@@ -422,13 +446,39 @@ def inference(
         except Exception as e:
             print(f"[inference] resize failed frame {i}: {e}", flush=True)
             traceback.print_exc()
-            continue
+            return False
         
         # Use v15 version blending
         combine_frame = get_image(ori_frame, res_frame, [x1, y1, x2, y2], mode=args.parsing_mode, fp=fp)
             
         cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png",combine_frame)
-    _mark("pad_blend_write_png", n_expected=len(res_frame_list))
+        return True
+
+    written_count = 0
+    if enable_parallel_blend and cpu_workers > 1:
+        with ThreadPoolExecutor(max_workers=cpu_workers) as pool:
+            futures = [pool.submit(_blend_and_write, i, rf) for i, rf in enumerate(res_frame_list)]
+            for fut in tqdm(as_completed(futures), total=len(futures)):
+                if fut.result():
+                    written_count += 1
+        _mark(
+            "pad_blend_write_png",
+            n_expected=len(res_frame_list),
+            n_written=written_count,
+            parallel=True,
+            workers=cpu_workers,
+        )
+    else:
+        for i, res_frame in enumerate(tqdm(res_frame_list)):
+            if _blend_and_write(i, res_frame):
+                written_count += 1
+        _mark(
+            "pad_blend_write_png",
+            n_expected=len(res_frame_list),
+            n_written=written_count,
+            parallel=False,
+            workers=1,
+        )
 
     # Frame rate
     fps = 25
@@ -612,6 +662,10 @@ def _realtime_api_runner(
         device=device,
         weight_dtype=weight_dtype,
         timesteps=timesteps,
+        cpu_workers=max(1, int(getattr(svc_cfg, "cpu_workers", 2))),
+        enable_parallel_realtime_prep=bool(
+            getattr(svc_cfg, "enable_parallel_realtime_prep", False)
+        ),
     )
     return run_realtime_job(
         ctx,

@@ -88,9 +88,17 @@ def _resolve_user_id(
 def create_service_app(
     inference_fn: Callable[..., tuple[str, str]],
     config: ServiceConfig | None = None,
-    realtime_runner: Callable[..., tuple[str, str]] | None = None,
+    realtime_runner: Callable[..., tuple[str, str, str]] | None = None,
 ) -> FastAPI:
     cfg = config or load_service_config()
+    print(
+        "[service-config] "
+        f"cpu_workers={cfg.cpu_workers} "
+        f"parallel_blend={cfg.enable_parallel_blend} "
+        f"audio_frame_overlap={cfg.enable_parallel_audio_frame_overlap} "
+        f"parallel_realtime_prep={cfg.enable_parallel_realtime_prep}",
+        flush=True,
+    )
 
     def bearer_dep(
         creds: HTTPAuthorizationCredentials | None = Depends(security),
@@ -105,8 +113,14 @@ def create_service_app(
     app = FastAPI(title="MuseTalk Service", version="1.0")
 
     @app.get("/api/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health() -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "cpu_workers": cfg.cpu_workers,
+            "parallel_blend": cfg.enable_parallel_blend,
+            "audio_frame_overlap": cfg.enable_parallel_audio_frame_overlap,
+            "parallel_realtime_prep": cfg.enable_parallel_realtime_prep,
+        }
 
     @app.post("/job", dependencies=[Depends(bearer_dep)])
     async def contract_post_job(
@@ -158,6 +172,7 @@ def create_service_app(
                 "work_dir": str(work),
                 "message": "",
                 "kind": "contract",
+                "cpu_workers": cfg.cpu_workers,
             }
         threading.Thread(
             target=_run_contract_muxed_job,
@@ -232,6 +247,8 @@ def create_service_app(
                 "status": "queued",
                 "work_dir": str(work),
                 "message": "",
+                "kind": "standard",
+                "cpu_workers": cfg.cpu_workers,
             }
 
         threading.Thread(
@@ -347,6 +364,7 @@ def create_service_app(
                     "clone_id": persist_user_id,
                     "reuse_avatar": is_reuse,
                     "use_clone": is_reuse,
+                    "cpu_workers": cfg.cpu_workers,
                 }
 
             threading.Thread(
