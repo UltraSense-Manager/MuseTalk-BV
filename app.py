@@ -2,6 +2,7 @@ import os
 import time
 import pdb
 import re
+import hashlib
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -221,7 +222,10 @@ def inference(
 
     input_basename = os.path.basename(video_path).split('.')[0]
     audio_basename = os.path.basename(audio_path).split('.')[0]
-    output_basename = f"{input_basename}_{audio_basename}"
+    # API uploads use stable names like input_video/input_audio. Add a deterministic
+    # per-job suffix from full paths to avoid collisions across concurrent/sequential jobs.
+    job_tag = hashlib.sha256(f"{video_path}|{audio_path}".encode("utf-8")).hexdigest()[:12]
+    output_basename = f"{input_basename}_{audio_basename}_{job_tag}"
     
     # Create temporary directory
     temp_dir = os.path.join(args.result_dir, f"{args.version}")
@@ -229,7 +233,9 @@ def inference(
     
     # Set result save path
     result_img_save_path = os.path.join(temp_dir, output_basename)
-    crop_coord_save_path = os.path.join(args.result_dir, "../", input_basename+".pkl")
+    crop_coord_save_path = os.path.join(args.result_dir, "../", f"{input_basename}_{job_tag}.pkl")
+    if os.path.isdir(result_img_save_path):
+        shutil.rmtree(result_img_save_path, ignore_errors=True)
     os.makedirs(result_img_save_path, exist_ok=True)
 
     if args.output_vid_name == "":
@@ -239,7 +245,9 @@ def inference(
         
     ############################################## extract frames from source video ##############################################
     if get_file_type(video_path) == "video":
-        save_dir_full = os.path.join(temp_dir, input_basename)
+        save_dir_full = os.path.join(temp_dir, f"{input_basename}_{job_tag}")
+        if os.path.isdir(save_dir_full):
+            shutil.rmtree(save_dir_full, ignore_errors=True)
         os.makedirs(save_dir_full, exist_ok=True)
         # Read video
         reader = imageio.get_reader(video_path)
@@ -350,7 +358,7 @@ def inference(
     # Frame rate
     fps = 25
     # Output video path
-    output_video = 'temp.mp4'
+    output_video = os.path.join(temp_dir, f"temp_{job_tag}.mp4")
 
     # Read images
     def is_valid_image(file):
@@ -385,7 +393,7 @@ def inference(
     # Save video
     imageio.mimwrite(output_video, normalized_images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
 
-    input_video = './temp.mp4'
+    input_video = output_video
     # Check if the input_video and audio_path exist
     if not os.path.exists(input_video):
         raise FileNotFoundError(f"Input video file not found: {input_video}")
@@ -412,8 +420,11 @@ def inference(
 
     # Write the output video
     video_clip.write_videofile(output_vid_name, codec='libx264', audio_codec='aac',fps=25)
+    video_clip.close()
+    audio_clip.close()
 
-    os.remove("temp.mp4")
+    if os.path.exists(output_video):
+        os.remove(output_video)
     #shutil.rmtree(result_img_save_path)
     print(f"result is save to {output_vid_name}")
     return output_vid_name, bbox_shift_text

@@ -5,7 +5,15 @@ import {
   submitRealtimeJob,
   submitStandardJob,
 } from "./api";
-import { puterAvailable, textToSpeechFile, validateTtsText } from "./tts";
+import {
+  formatTtsDuration,
+  getDecodedAudioDurationSeconds,
+  previewTextToSpeech,
+  puterAvailable,
+  textToSpeechFile,
+  validateTtsText,
+  waitAudioElementDuration,
+} from "./tts";
 import "./App.css";
 
 const POLL_INTERVAL_MS = 2000;
@@ -27,6 +35,9 @@ export default function App() {
   const [prepFrames, setPrepFrames] = useState(30);
 
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [previewActive, setPreviewActive] = useState(false);
+  const [ttsDurationLine, setTtsDurationLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
@@ -36,6 +47,7 @@ export default function App() {
   const lastRealtimeVideoKeyRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runStartRef = useRef<number>(0);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (!videoFile) {
@@ -52,6 +64,20 @@ export default function App() {
     });
     return () => URL.revokeObjectURL(url);
   }, [videoFile]);
+
+  useEffect(() => {
+    setTtsDurationLine(null);
+  }, [ttsText]);
+
+  useEffect(() => {
+    return () => {
+      const a = previewAudioRef.current;
+      if (a) {
+        a.pause();
+        previewAudioRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!busy) return;
@@ -93,6 +119,63 @@ export default function App() {
     return null;
   }, [baseUrl, ttsText, videoFile, realtime, willReuseClone]);
 
+  const stopPreview = useCallback(() => {
+    const a = previewAudioRef.current;
+    if (a) {
+      a.pause();
+      a.currentTime = 0;
+      previewAudioRef.current = null;
+    }
+    setPreviewActive(false);
+  }, []);
+
+  const onPreviewTts = async () => {
+    setError(null);
+    setInfo(null);
+    const ttsErr = validateTtsText(ttsText);
+    if (ttsErr) {
+      setError(ttsErr);
+      return;
+    }
+    if (!puterAvailable()) {
+      setError("Puter.js is still loading or blocked. Refresh the page.");
+      return;
+    }
+    setPreviewBusy(true);
+    try {
+      stopPreview();
+      const el = await previewTextToSpeech(ttsText);
+      previewAudioRef.current = el;
+      el.onended = () => {
+        if (previewAudioRef.current === el) previewAudioRef.current = null;
+        setPreviewActive(false);
+      };
+      let durSec: number | null = null;
+      try {
+        durSec = await waitAudioElementDuration(el);
+        setTtsDurationLine(`TTS duration: ${formatTtsDuration(durSec)} (preview)`);
+      } catch {
+        setTtsDurationLine(null);
+      }
+      await el.play();
+      setPreviewActive(true);
+      setInfo(
+        durSec !== null
+          ? `Playing TTS preview (${formatTtsDuration(durSec)})…`
+          : "Playing TTS preview…"
+      );
+    } catch (err) {
+      previewAudioRef.current?.pause();
+      previewAudioRef.current = null;
+      setPreviewActive(false);
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Preview failed: ${msg}`);
+      setInfo(null);
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -111,6 +194,8 @@ export default function App() {
     const ac = new AbortController();
     abortRef.current = ac;
 
+    stopPreview();
+
     setBusy(true);
     runStartRef.current = performance.now();
     setElapsedMs(null);
@@ -119,6 +204,14 @@ export default function App() {
     try {
       setInfo("Synthesizing speech (Puter.js)…");
       const audioFile = await textToSpeechFile(ttsText);
+      try {
+        const dur = await getDecodedAudioDurationSeconds(audioFile);
+        setTtsDurationLine(`TTS duration: ${formatTtsDuration(dur)} (this run)`);
+        setInfo(`Driving audio ${formatTtsDuration(dur)} — submitting job…`);
+      } catch {
+        setTtsDurationLine(null);
+        setInfo("Submitting job…");
+      }
 
       const commonForm: Record<string, string> = {
         bbox_shift: "0",
@@ -281,6 +374,26 @@ export default function App() {
             disabled={busy}
             placeholder="Script to synthesize as driving audio…"
           />
+          <div className="row tts-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => void onPreviewTts()}
+              disabled={busy || previewBusy}
+            >
+              {previewBusy ? "Preview…" : "Preview TTS"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={stopPreview}
+              disabled={busy || !previewActive}
+              title="Stop preview playback"
+            >
+              Stop preview
+            </button>
+          </div>
+          <p className="hint">Preview uses the same Puter synthesis as submit (WAV).</p>
         </div>
 
         <div className="row">
@@ -340,6 +453,8 @@ export default function App() {
         {displayElapsed !== null ? (
           <p className="stopwatch">Elapsed: {displayElapsed.toFixed(1)}s</p>
         ) : null}
+
+        {ttsDurationLine ? <p className="hint">{ttsDurationLine}</p> : null}
 
         {error ? (
           <div className="msg error" role="alert">
