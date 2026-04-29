@@ -11,8 +11,12 @@ models/
 *.py[cod]
 *$py.class
 dataset/
-ffmpeg*
-ffmprobe*
+# Ignore vendored ffmpeg bundles / binaries, not Python modules named ffmpeg_*.py
+ffmpeg-master-latest-win64-gpl-shared/
+ffmpeg/
+ffmpeg
+ffmpeg.exe
+ffprobe*
 ffplay*
 debug
 exp_out
