@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -534,6 +534,7 @@ def run_realtime_job(
     batch_size: int,
     fps: int,
     resolution_scale: str = "full",
+    status_callback: Callable[[str, float, dict[str, float]], None] | None = None,
 ) -> tuple[str, str, str]:
     """
     If ``reuse_avatar`` is False: extract first ``prep_frames`` from ``video_path``,
@@ -546,6 +547,30 @@ def run_realtime_job(
     Returns ``(result_path, info, persist_avatar_id)``.
     """
     mark_job = _rt_phase_timer(f"run_realtime_job job={job_id}")
+    stage_times: dict[str, float] = {}
+    stage_name = [""]
+    stage_t0 = [time.perf_counter()]
+
+    def set_stage(stage: str) -> None:
+        now = time.perf_counter()
+        prev = stage_name[0]
+        if prev:
+            stage_times[prev] = stage_times.get(prev, 0.0) + (now - stage_t0[0])
+            if status_callback:
+                status_callback(prev, stage_times[prev], dict(stage_times))
+        stage_name[0] = stage
+        stage_t0[0] = now
+        if status_callback:
+            status_callback(stage, stage_times.get(stage, 0.0), dict(stage_times))
+
+    def finish_stage() -> None:
+        now = time.perf_counter()
+        prev = stage_name[0]
+        if prev:
+            stage_times[prev] = stage_times.get(prev, 0.0) + (now - stage_t0[0])
+            if status_callback:
+                status_callback(prev, stage_times[prev], dict(stage_times))
+
     ctx = RealtimeJobContext(
         version=ctx.version,
         extra_margin=extra_margin,
@@ -571,6 +596,7 @@ def run_realtime_job(
         enable_parallel_realtime_prep=ctx.enable_parallel_realtime_prep,
     )
     mark_job("context_clone_fp_ready")
+    set_stage("preprocess")
 
     store = _avatar_store_dir()
     avatar_root = os.path.join(store, persist_avatar_id)
@@ -617,6 +643,7 @@ def run_realtime_job(
             f"bbox_shift={bbox_shift}; parsing_mode={parsing_mode}"
         )
 
+    set_stage("inference")
     out = avatar.inference(
         audio_path, out_vid_base, fps=fps, skip_save_images=ctx.skip_save_images
     )
@@ -624,7 +651,9 @@ def run_realtime_job(
     if not out:
         raise RuntimeError("realtime inference produced no video (check skip_save_images)")
 
+    set_stage("export")
     result_copy = os.path.join(work_dir, "result.mp4")
     shutil.copy2(out, result_copy)
     mark_job("result_copied_to_work_dir", result_copy=result_copy)
+    finish_stage()
     return result_copy, info, persist_avatar_id

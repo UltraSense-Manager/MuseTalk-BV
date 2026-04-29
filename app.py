@@ -5,6 +5,7 @@ import re
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 
 from dotenv import load_dotenv
 
@@ -204,6 +205,7 @@ def inference(
     left_cheek_width=90,
     right_cheek_width=90,
     resolution_scale: str = "full",
+    status_callback: Callable[[str, float, dict[str, float]], None] | None = None,
     progress=gr.Progress(track_tqdm=True),
 ):
     print(
@@ -213,6 +215,9 @@ def inference(
     )
     _t0 = time.perf_counter()
     _tp = [_t0]
+    stage_times: dict[str, float] = {}
+    _stage_name = [""]
+    _stage_t0 = [time.perf_counter()]
 
     def _mark(phase: str, **kv: object) -> None:
         now = time.perf_counter()
@@ -223,6 +228,37 @@ def inference(
             flush=True,
         )
         _tp[0] = now
+
+    def _set_stage(stage: str) -> None:
+        now = time.perf_counter()
+        prev = _stage_name[0]
+        if prev:
+            stage_times[prev] = stage_times.get(prev, 0.0) + (now - _stage_t0[0])
+            if status_callback:
+                status_callback(prev, stage_times[prev], dict(stage_times))
+        _stage_name[0] = stage
+        _stage_t0[0] = now
+        if status_callback:
+            status_callback(stage, stage_times.get(stage, 0.0), dict(stage_times))
+
+    def _finish_stage() -> None:
+        now = time.perf_counter()
+        prev = _stage_name[0]
+        if prev:
+            stage_times[prev] = stage_times.get(prev, 0.0) + (now - _stage_t0[0])
+            if status_callback:
+                status_callback(prev, stage_times[prev], dict(stage_times))
+
+    def _format_stage_report() -> str:
+        order = ("upload", "preprocess", "inference", "pad", "export")
+        parts = []
+        for name in order:
+            if name in stage_times:
+                parts.append(f"{name}={stage_times[name]:.2f}s")
+        for name, val in stage_times.items():
+            if name not in order:
+                parts.append(f"{name}={val:.2f}s")
+        return " | ".join(parts)
 
     # Set default parameters, aligned with inference.py
     args_dict = {
@@ -246,6 +282,7 @@ def inference(
     enable_audio_frame_overlap = bool(
         getattr(cfg, "enable_parallel_audio_frame_overlap", True)
     )
+    _set_stage("preprocess")
 
     # Check ffmpeg
     if not fast_check_ffmpeg():
@@ -400,6 +437,7 @@ def inference(
     
     ############################################## inference batch by batch ##############################################
     print("start inference", flush=True)
+    _set_stage("inference")
     video_num = len(whisper_chunks)
     batch_size = args.batch_size
     gen = datagen(
@@ -423,6 +461,7 @@ def inference(
 
     ############################################## pad to full image ##############################################
     print("pad talking image to original video", flush=True)
+    _set_stage("pad")
 
     def _blend_and_write(i: int, res_frame) -> bool:
         bbox = coord_list_cycle[i%(len(coord_list_cycle))]
@@ -482,6 +521,7 @@ def inference(
 
     # Frame rate
     fps = 25
+    _set_stage("export")
     # Output video path
     output_video = os.path.join(temp_dir, f"temp_{job_tag}.mp4")
 
@@ -575,6 +615,10 @@ def inference(
         os.remove(output_video)
     #shutil.rmtree(result_img_save_path)
     print(f"result is save to {output_vid_name}", flush=True)
+    _finish_stage()
+    stage_report = _format_stage_report()
+    if stage_report:
+        bbox_shift_text = f"{bbox_shift_text}\nStage times: {stage_report}"
     _mark("inference_done", out=output_vid_name)
     return output_vid_name, bbox_shift_text
 
@@ -638,6 +682,7 @@ def _realtime_api_runner(
     batch_size: int,
     fps: int,
     resolution_scale: str = "full",
+    status_callback: Callable[[str, float, dict[str, float]], None] | None = None,
 ) -> tuple[str, str, str]:
     from musetalk.service.realtime_job import RealtimeJobContext, run_realtime_job
 
@@ -684,6 +729,7 @@ def _realtime_api_runner(
         batch_size,
         fps,
         resolution_scale,
+        status_callback=status_callback,
     )
 
 

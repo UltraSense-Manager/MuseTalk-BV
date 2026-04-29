@@ -224,6 +224,7 @@ def create_service_app(
             description="Process at reduced resolution then upscale: full, half, eighth, lowest",
         ),
     ) -> JSONResponse:
+        t_up = time.perf_counter()
         try:
             parse_resolution_scale(resolution_scale)
         except ValueError as e:
@@ -241,14 +242,16 @@ def create_service_app(
             shutil.copyfileobj(audio.file, af)
         with open(video_path, "wb") as vf:
             shutil.copyfileobj(video.file, vf)
+        upload_elapsed = time.perf_counter() - t_up
 
         with _JOBS_LOCK:
             _JOBS[job_id] = {
                 "status": "queued",
                 "work_dir": str(work),
-                "message": "",
+                "message": f"upload {upload_elapsed:.2f}s",
                 "kind": "standard",
                 "cpu_workers": cfg.cpu_workers,
+                "stage_times": {"upload": round(upload_elapsed, 3)},
             }
 
         threading.Thread(
@@ -302,6 +305,7 @@ def create_service_app(
             ),
             user_id: str = Depends(auth_user_dep),
         ) -> JSONResponse:
+            t_up = time.perf_counter()
             try:
                 parse_resolution_scale(resolution_scale)
             except ValueError as e:
@@ -352,12 +356,13 @@ def create_service_app(
                 with open(vp, "wb") as vf:
                     shutil.copyfileobj(video.file, vf)
                 video_str = str(vp)
+            upload_elapsed = time.perf_counter() - t_up
 
             with _JOBS_LOCK:
                 _JOBS[job_id] = {
                     "status": "queued",
                     "work_dir": str(work),
-                    "message": "",
+                    "message": f"upload {upload_elapsed:.2f}s",
                     "kind": "realtime",
                     "realtime_prep_frames": prep,
                     "user_id": persist_user_id,
@@ -365,6 +370,7 @@ def create_service_app(
                     "reuse_avatar": is_reuse,
                     "use_clone": is_reuse,
                     "cpu_workers": cfg.cpu_workers,
+                    "stage_times": {"upload": round(upload_elapsed, 3)},
                 }
 
             threading.Thread(
@@ -413,6 +419,8 @@ def create_service_app(
             "status": info["status"],
             "message": info.get("message", ""),
         }
+        if info.get("stage_times"):
+            out["stage_times"] = info["stage_times"]
         if info.get("kind"):
             out["kind"] = info["kind"]
         if info.get("user_id"):
@@ -525,7 +533,20 @@ def _run_job_background(
         )
         set_status("processing", message="worker started")
         print(f"[job {job_id}] /api/job entering inference()", flush=True)
-        set_status("processing", message="running inference")
+        with _JOBS_LOCK:
+            initial = dict((_JOBS.get(job_id) or {}).get("stage_times") or {})
+        stage_times: dict[str, float] = {k: float(v) for k, v in initial.items()}
+
+        def stage_callback(stage: str, elapsed: float, snapshot: dict[str, float]) -> None:
+            stage_times.update(snapshot)
+            set_status(
+                "processing",
+                stage=stage,
+                message=f"{stage} {elapsed:.2f}s",
+                stage_times={k: round(v, 3) for k, v in stage_times.items()},
+            )
+
+        set_status("processing", stage="preprocess", message="preprocess 0.00s")
         t_inf = time.perf_counter()
         out_path, bbox_text = inference_fn(
             audio_path,
@@ -536,18 +557,20 @@ def _run_job_background(
             left_cheek_width,
             right_cheek_width,
             resolution_scale=resolution_scale,
+            status_callback=stage_callback,
         )
         print(
             f"[job {job_id}] /api/job inference_fn wall={time.perf_counter() - t_inf:.3f}s "
             f"out={out_path}",
             flush=True,
         )
-        set_status("processing", message="finalizing output")
         set_status(
             "done",
             result_path=out_path,
             bbox_shift_text=bbox_text,
             message="",
+            stage="done",
+            stage_times={k: round(v, 3) for k, v in stage_times.items()},
         )
     except Exception as e:
         print(f"[job {job_id}] /api/job failed: {e}", flush=True)
@@ -586,7 +609,20 @@ def _run_realtime_job_background(
             f"reuse_avatar={reuse_avatar} work_dir={work_dir}",
             flush=True,
         )
-        set_status("processing", message="realtime worker started")
+        with _JOBS_LOCK:
+            initial = dict((_JOBS.get(job_id) or {}).get("stage_times") or {})
+        stage_times: dict[str, float] = {k: float(v) for k, v in initial.items()}
+
+        def stage_callback(stage: str, elapsed: float, snapshot: dict[str, float]) -> None:
+            stage_times.update(snapshot)
+            set_status(
+                "processing",
+                stage=stage,
+                message=f"{stage} {elapsed:.2f}s",
+                stage_times={k: round(v, 3) for k, v in stage_times.items()},
+            )
+
+        set_status("processing", stage="preprocess", message="preprocess 0.00s")
         t_rt = time.perf_counter()
         out_path, bbox_text, _aid = realtime_runner(
             work_dir,
@@ -604,6 +640,7 @@ def _run_realtime_job_background(
             batch_size,
             fps,
             resolution_scale,
+            status_callback=stage_callback,
         )
         print(
             f"[job {job_id}] /api/realtime/job realtime_runner wall="
@@ -617,6 +654,8 @@ def _run_realtime_job_background(
             message="",
             user_id=persist_avatar_id,
             clone_id=persist_avatar_id,
+            stage="done",
+            stage_times={k: round(v, 3) for k, v in stage_times.items()},
         )
     except Exception as e:
         print(f"[job {job_id}] /api/realtime/job failed: {e}", flush=True)
