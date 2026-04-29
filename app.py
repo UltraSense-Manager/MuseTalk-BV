@@ -178,7 +178,11 @@ from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
 from musetalk.service.config import load_service_config
-from musetalk.service.resolution_scale import downscale_png_dir_inplace, parse_resolution_scale
+from musetalk.service.resolution_scale import (
+    downscale_png_dir_inplace,
+    parse_resolution_scale,
+    upscale_video_stream,
+)
 
 
 def fast_check_ffmpeg():
@@ -464,13 +468,10 @@ def inference(
 
     if full_target_hw is not None:
         fw, fh = full_target_hw
-        print(f"[inference] upscaling {len(normalized_images)} frames to {fw}x{fh}", flush=True)
-        upscaled: list = []
-        for img in normalized_images:
-            if img.shape[1] != fw or img.shape[0] != fh:
-                img = cv2.resize(img, (fw, fh), interpolation=cv2.INTER_LANCZOS4)
-            upscaled.append(img)
-        normalized_images = upscaled
+        print(
+            f"[inference] will upscale encoded temp video via ffmpeg to {fw}x{fh}",
+            flush=True,
+        )
     _mark(
         "upscale_frames_optional",
         did_upscale=full_target_hw is not None,
@@ -480,6 +481,14 @@ def inference(
     # Save video
     imageio.mimwrite(output_video, normalized_images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
     _mark("imageio_mimwrite_temp_mp4", path=output_video)
+    if full_target_hw is not None:
+        fw, fh = full_target_hw
+        upscaled_temp = os.path.join(temp_dir, f"temp_upscaled_{job_tag}.mp4")
+        upscale_video_stream(output_video, fw, fh, upscaled_temp)
+        os.replace(upscaled_temp, output_video)
+        _mark("ffmpeg_upscale_video_stream", target=f"{fw}x{fh}")
+    else:
+        _mark("ffmpeg_upscale_video_stream_skipped")
 
     input_video = output_video
     # Check if the input_video and audio_path exist

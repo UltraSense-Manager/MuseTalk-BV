@@ -5,8 +5,6 @@ from __future__ import annotations
 import glob
 import os
 import subprocess
-import cv2
-import imageio.v2 as imageio
 
 
 def _even_dim(v: int) -> int:
@@ -53,15 +51,94 @@ def downscale_png_dir_inplace(
     files = sorted(glob.glob(os.path.join(dir_path, "*.png")))
     if not files:
         raise RuntimeError(f"no PNG frames under {dir_path!r}")
-    first = imageio.imread(files[0])
-    full_h, full_w = first.shape[:2]
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+            files[0],
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0 or "x" not in probe.stdout:
+        raise RuntimeError(
+            f"ffprobe failed on first frame ({probe.returncode}): {probe.stderr[-1200:]!r}"
+        )
+    full_w, full_h = [int(v) for v in probe.stdout.strip().split("x", 1)]
     new_w = _even_dim(int(round(full_w * scale)))
     new_h = _even_dim(int(round(full_h * scale)))
+    tmp_dir = os.path.join(dir_path, "_scaled_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "warning",
+            "-i",
+            os.path.join(dir_path, "%08d.png"),
+            "-vf",
+            f"scale={new_w}:{new_h}:flags=area",
+            os.path.join(tmp_dir, "%08d.png"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg downscale failed ({proc.returncode}): {proc.stderr[-1500:]!r}"
+        )
+    scaled = sorted(glob.glob(os.path.join(tmp_dir, "*.png")))
+    if not scaled:
+        raise RuntimeError("ffmpeg downscale produced no frames")
     for p in files:
-        img = imageio.imread(p)
-        small = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        imageio.imwrite(p, small)
+        os.remove(p)
+    for p in scaled:
+        os.replace(p, os.path.join(dir_path, os.path.basename(p)))
+    os.rmdir(tmp_dir)
     return (full_w, full_h)
+
+
+def upscale_video_stream(
+    input_mp4: str,
+    width: int,
+    height: int,
+    out_mp4: str,
+) -> None:
+    """Upscale video stream only (no audio) to WxH."""
+    even_w = _even_dim(width)
+    even_h = _even_dim(height)
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "warning",
+            "-i",
+            input_mp4,
+            "-vf",
+            f"scale={even_w}:{even_h}:flags=lanczos",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            out_mp4,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg upscale video-only failed ({proc.returncode}): {proc.stderr[-1500:]!r}"
+        )
 
 
 def upscale_video_replace_audio(
