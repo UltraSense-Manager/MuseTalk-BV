@@ -206,6 +206,19 @@ def inference(
         f"bbox_shift={bbox_shift}",
         flush=True,
     )
+    _t0 = time.perf_counter()
+    _tp = [_t0]
+
+    def _mark(phase: str, **kv: object) -> None:
+        now = time.perf_counter()
+        extra = (" " + " ".join(f"{k}={v}" for k, v in kv.items())) if kv else ""
+        print(
+            f"[inference:timing] {phase} dt={now - _tp[0]:.3f}s total={now - _t0:.3f}s"
+            f"{extra}",
+            flush=True,
+        )
+        _tp[0] = now
+
     # Set default parameters, aligned with inference.py
     args_dict = {
         "result_dir": './results/output', 
@@ -269,6 +282,13 @@ def inference(
         input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
         fps = args.fps
 
+    _mark(
+        "frame_extract_or_list",
+        n_frames=len(input_img_list),
+        fps=fps,
+        source="video" if get_file_type(video_path) == "video" else "image_folder",
+    )
+
     try:
         scale = parse_resolution_scale(resolution_scale)
     except ValueError as e:
@@ -284,6 +304,11 @@ def inference(
             f"(scale={scale}) upscale target={full_target_hw}",
             flush=True,
         )
+    _mark(
+        "resolution_downscale",
+        scale=scale,
+        full_target_hw=full_target_hw,
+    )
 
     ############################################## extract audio feature ##############################################
     # Extract audio features
@@ -298,20 +323,29 @@ def inference(
         audio_padding_length_left=args.audio_padding_length_left,
         audio_padding_length_right=args.audio_padding_length_right,
     )
-        
+    _mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks))
+
     ############################################## preprocess input image  ##############################################
     if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
         print("using extracted coordinates", flush=True)
+        used_saved_coord = True
         with open(crop_coord_save_path,'rb') as f:
             coord_list = pickle.load(f)
         frame_list = read_imgs(input_img_list)
     else:
         print("extracting landmarks...time consuming", flush=True)
+        used_saved_coord = False
         coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
         with open(crop_coord_save_path, 'wb') as f:
             pickle.dump(coord_list, f)
     bbox_shift_text = get_bbox_range(input_img_list, bbox_shift)
-    
+    _mark(
+        "landmarks_read_or_extract",
+        n_coords=len(coord_list),
+        n_frames=len(frame_list),
+        used_saved_coord=used_saved_coord,
+    )
+
     # Initialize face parser
     fp = FaceParsing(
         left_cheek_width=args.left_cheek_width,
@@ -330,6 +364,7 @@ def inference(
         crop_frame = cv2.resize(crop_frame,(256,256),interpolation = cv2.INTER_LANCZOS4)
         latents = vae.get_latents_for_unet(crop_frame)
         input_latent_list.append(latents)
+    _mark("vae_encode_face_crops", n_latents=len(input_latent_list))
 
     # to smooth the first and the last frame
     frame_list_cycle = frame_list + frame_list[::-1]
@@ -357,7 +392,8 @@ def inference(
         recon = vae.decode_latents(pred_latents)
         for res_frame in recon:
             res_frame_list.append(res_frame)
-            
+    _mark("unet_decode_batches", n_out_frames=len(res_frame_list))
+
     ############################################## pad to full image ##############################################
     print("pad talking image to original video", flush=True)
     for i, res_frame in enumerate(tqdm(res_frame_list)):
@@ -388,7 +424,8 @@ def inference(
         combine_frame = get_image(ori_frame, res_frame, [x1, y1, x2, y2], mode=args.parsing_mode, fp=fp)
             
         cv2.imwrite(f"{result_img_save_path}/{str(i).zfill(8)}.png",combine_frame)
-        
+    _mark("pad_blend_write_png", n_expected=len(res_frame_list))
+
     # Frame rate
     fps = 25
     # Output video path
@@ -423,6 +460,7 @@ def inference(
             , flush=True)
             img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
         normalized_images.append(img)
+    _mark("load_pngs_normalize", n_images=len(normalized_images))
 
     if full_target_hw is not None:
         fw, fh = full_target_hw
@@ -433,9 +471,15 @@ def inference(
                 img = cv2.resize(img, (fw, fh), interpolation=cv2.INTER_LANCZOS4)
             upscaled.append(img)
         normalized_images = upscaled
+    _mark(
+        "upscale_frames_optional",
+        did_upscale=full_target_hw is not None,
+        target=full_target_hw,
+    )
 
     # Save video
     imageio.mimwrite(output_video, normalized_images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
+    _mark("imageio_mimwrite_temp_mp4", path=output_video)
 
     input_video = output_video
     # Check if the input_video and audio_path exist
@@ -466,11 +510,13 @@ def inference(
     video_clip.write_videofile(output_vid_name, codec='libx264', audio_codec='aac',fps=25)
     video_clip.close()
     audio_clip.close()
+    _mark("moviepy_write_final_mp4", path=output_vid_name)
 
     if os.path.exists(output_video):
         os.remove(output_video)
     #shutil.rmtree(result_img_save_path)
     print(f"result is save to {output_vid_name}", flush=True)
+    _mark("inference_done", out=output_vid_name)
     return output_vid_name, bbox_shift_text
 
 

@@ -36,6 +36,24 @@ from musetalk.service.resolution_scale import (
 )
 
 
+def _rt_phase_timer(tag: str):
+    """Return a ``mark(phase, **kv)`` callable: logs dt since last mark and total since start."""
+    t0 = time.perf_counter()
+    prev = [t0]
+
+    def mark(phase: str, **kv: object) -> None:
+        now = time.perf_counter()
+        extra = (" " + " ".join(f"{k}={v}" for k, v in kv.items())) if kv else ""
+        print(
+            f"[realtime:timing tag={tag}] {phase} dt={now - prev[0]:.3f}s "
+            f"total={now - t0:.3f}s{extra}",
+            flush=True,
+        )
+        prev[0] = now
+
+    return mark
+
+
 def extract_first_frames_ffmpeg(video_path: str, out_dir: str, n: int) -> None:
     """Write first n frames as 00000000.png … using ffmpeg."""
     os.makedirs(out_dir, exist_ok=True)
@@ -144,6 +162,7 @@ class RealtimeAvatar:
 
     def prepare_material(self) -> None:
         print("preparing realtime avatar materials ...")
+        mark = _rt_phase_timer(f"prepare_material avatar={self.avatar_id}")
         with open(self.avatar_info_path, "w") as f:
             json.dump(self.avatar_info, f)
 
@@ -161,9 +180,15 @@ class RealtimeAvatar:
         input_img_list = sorted(
             glob.glob(os.path.join(self.full_imgs_path, "*.[jpJP][pnPN]*[gG]"))
         )
+        mark(
+            "video_or_folder_to_full_imgs",
+            n_frames=len(input_img_list),
+            source="file" if os.path.isfile(self.video_path) else "folder",
+        )
 
         print("extracting landmarks...")
         coord_list, frame_list = get_landmark_and_bbox(input_img_list, self.bbox_shift)
+        mark("landmarks_and_frames", n_coords=len(coord_list), n_frames=len(frame_list))
         input_latent_list: list[Any] = []
         idx = -1
         coord_placeholder = (0.0, 0.0, 0.0, 0.0)
@@ -182,6 +207,7 @@ class RealtimeAvatar:
             )
             latents = self.ctx.vae.get_latents_for_unet(resized_crop_frame)
             input_latent_list.append(latents)
+        mark("vae_encode_face_crops", n_latents=len(input_latent_list))
 
         self.frame_list_cycle = frame_list + frame_list[::-1]
         self.coord_list_cycle = coord_list + coord_list[::-1]
@@ -201,6 +227,11 @@ class RealtimeAvatar:
             cv2.imwrite(f"{self.mask_out_path}/{str(i).zfill(8)}.png", mask)
             self.mask_coords_list_cycle += [crop_box]
             self.mask_list_cycle.append(mask)
+        mark(
+            "masks_blend_prep_writes",
+            n_cycle_frames=len(self.frame_list_cycle),
+            n_masks=len(self.mask_list_cycle),
+        )
 
         with open(self.mask_coords_path, "wb") as f:
             pickle.dump(self.mask_coords_list_cycle, f)
@@ -212,6 +243,7 @@ class RealtimeAvatar:
 
         with open(self.avatar_info_path, "w") as f:
             json.dump(self.avatar_info, f)
+        mark("pickles_latents_avatar_info_saved")
 
     def process_frames(
         self, res_frame_queue: queue.Queue, video_len: int, skip_save_images: bool
@@ -254,6 +286,7 @@ class RealtimeAvatar:
     ) -> str | None:
         os.makedirs(self.avatar_path + "/tmp", exist_ok=True)
         print("start realtime inference")
+        mark = _rt_phase_timer(f"realtime_inference avatar={self.avatar_id}")
         whisper_input_features, librosa_length = self.ctx.audio_processor.get_audio_feature(
             audio_path, weight_dtype=self.ctx.weight_dtype
         )
@@ -267,6 +300,7 @@ class RealtimeAvatar:
             audio_padding_length_left=self.ctx.audio_padding_length_left,
             audio_padding_length_right=self.ctx.audio_padding_length_right,
         )
+        mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks))
         video_num = len(whisper_chunks)
         res_frame_queue: queue.Queue[Any] = queue.Queue()
         self.idx = 0
@@ -275,6 +309,7 @@ class RealtimeAvatar:
             args=(res_frame_queue, video_num, skip_save_images),
         )
         process_thread.start()
+        mark("process_thread_started")
 
         gen = datagen(
             whisper_chunks,
@@ -283,6 +318,7 @@ class RealtimeAvatar:
             device=str(self.ctx.device),
         )
         t0 = time.time()
+        first_batch = True
         for whisper_batch, latent_batch in tqdm(
             gen, total=int(np.ceil(float(video_num) / self.batch_size))
         ):
@@ -302,13 +338,28 @@ class RealtimeAvatar:
             recon = self.ctx.vae.decode_latents(pred_latents)
             for res_frame in recon:
                 res_frame_queue.put(res_frame)
+            if first_batch:
+                mark("first_unet_batch_done", batch_size=len(recon))
+                first_batch = False
+        gpu_dt = time.time() - t0
         process_thread.join()
+        mark(
+            "gpu_loop_and_process_thread_join",
+            n_frames=video_num,
+            gpu_loop_s=f"{gpu_dt:.3f}",
+            skip_save_images=skip_save_images,
+        )
         print(
-            f"realtime inference {video_num} frames in {time.time() - t0:.2f}s "
+            f"realtime inference {video_num} frames in {gpu_dt:.2f}s "
             f"(skip_save_images={skip_save_images})"
         )
 
         if out_vid_name is None or skip_save_images:
+            mark(
+                "early_exit_no_ffmpeg_mux",
+                out_vid_name=out_vid_name,
+                skip_save_images=skip_save_images,
+            )
             return None
 
         tmp_glob = os.path.join(self.avatar_path, "tmp", "%08d.png")
@@ -335,6 +386,7 @@ class RealtimeAvatar:
             ],
             check=True,
         )
+        mark("ffmpeg_png_to_temp_mp4", temp_mp4=temp_mp4)
         os.makedirs(self.video_out_path, exist_ok=True)
         output_vid = os.path.join(self.video_out_path, out_vid_name + ".mp4")
         subprocess.run(
@@ -351,6 +403,7 @@ class RealtimeAvatar:
             ],
             check=True,
         )
+        mark("ffmpeg_mux_audio_video", output_vid=output_vid)
         os.remove(temp_mp4)
         shutil.rmtree(os.path.join(self.avatar_path, "tmp"), ignore_errors=True)
         if self.upscale_target_wh is not None:
@@ -359,7 +412,11 @@ class RealtimeAvatar:
             upscale_video_replace_audio(output_vid, audio_path, uw, uh, tmp_up)
             os.replace(tmp_up, output_vid)
             print(f"realtime result upscaled to {uw}x{uh} -> {output_vid}", flush=True)
+            mark("upscale_video_done", uw=uw, uh=uh)
+        else:
+            mark("upscale_video_skipped")
         print(f"realtime result saved to {output_vid}")
+        mark("realtime_inference_done", path=output_vid)
         return output_vid
 
     @classmethod
@@ -388,11 +445,14 @@ class RealtimeAvatar:
         self.batch_size = batch_size
         self.idx = 0
 
+        mark = _rt_phase_timer(f"from_prepared avatar={avatar_id}")
         if not os.path.isfile(self.latents_out_path):
             raise FileNotFoundError(f"missing prepared avatar: {self.latents_out_path}")
         self.input_latent_list_cycle = torch.load(self.latents_out_path)
+        mark("torch_load_latents", path=self.latents_out_path)
         with open(self.coords_path, "rb") as f:
             self.coord_list_cycle = pickle.load(f)
+        mark("pickle_load_coords")
         input_img_list = sorted(
             glob.glob(os.path.join(self.full_imgs_path, "*.[jpJP][pnPN]*[gG]")),
             key=lambda x: int(os.path.splitext(os.path.basename(x))[0]),
@@ -400,13 +460,16 @@ class RealtimeAvatar:
         if not input_img_list:
             raise FileNotFoundError(f"no frames under {self.full_imgs_path}")
         self.frame_list_cycle = read_imgs(input_img_list)
+        mark("read_imgs_full_frames", n=len(input_img_list))
         with open(self.mask_coords_path, "rb") as f:
             self.mask_coords_list_cycle = pickle.load(f)
+        mark("pickle_load_mask_coords")
         input_mask_list = sorted(
             glob.glob(os.path.join(self.mask_out_path, "*.[jpJP][pnPN]*[gG]")),
             key=lambda x: int(os.path.splitext(os.path.basename(x))[0]),
         )
         self.mask_list_cycle = read_imgs(input_mask_list)
+        mark("read_imgs_masks", n=len(input_mask_list))
         if os.path.isfile(self.avatar_info_path):
             with open(self.avatar_info_path) as f:
                 self.avatar_info = json.load(f)
@@ -422,6 +485,7 @@ class RealtimeAvatar:
                 self.upscale_target_wh = None
         except (TypeError, ValueError):
             self.upscale_target_wh = None
+        mark("from_prepared_ready", upscale_target_wh=self.upscale_target_wh)
         return self
 
 
@@ -460,6 +524,7 @@ def run_realtime_job(
 
     Returns ``(result_path, info, persist_avatar_id)``.
     """
+    mark_job = _rt_phase_timer(f"run_realtime_job job={job_id}")
     ctx = RealtimeJobContext(
         version=ctx.version,
         extra_margin=extra_margin,
@@ -482,6 +547,7 @@ def run_realtime_job(
         weight_dtype=ctx.weight_dtype,
         timesteps=ctx.timesteps,
     )
+    mark_job("context_clone_fp_ready")
 
     store = _avatar_store_dir()
     avatar_root = os.path.join(store, persist_avatar_id)
@@ -495,6 +561,7 @@ def run_realtime_job(
         avatar = RealtimeAvatar.from_prepared(
             ctx, avatar_root, batch_size, persist_avatar_id
         )
+        mark_job("avatar_from_prepared")
         info = (
             f"realtime_reuse; avatar_id={persist_avatar_id}; "
             f"parsing_mode={parsing_mode}"
@@ -504,9 +571,13 @@ def run_realtime_job(
             raise FileNotFoundError("video_path required for new avatar preparation")
         frames_dir = os.path.join(work_dir, "prep_frames")
         extract_first_frames_ffmpeg(video_path, frames_dir, prep_frames)
+        mark_job("extract_first_frames_ffmpeg", prep_frames=prep_frames, frames_dir=frames_dir)
         upscale_wh: tuple[int, int] | None = None
         if scale < 1.0 - 1e-9:
             upscale_wh = downscale_png_dir_inplace(frames_dir, scale)
+            mark_job("downscale_prep_frames", scale=scale, upscale_wh=upscale_wh)
+        else:
+            mark_job("downscale_prep_frames_skipped", scale=scale)
 
         avatar = RealtimeAvatar(
             ctx,
@@ -517,6 +588,7 @@ def run_realtime_job(
             avatar_root=avatar_root,
             upscale_target_wh=upscale_wh,
         )
+        mark_job("realtime_avatar_constructed_prepare_done")
         info = (
             f"realtime; avatar_id={persist_avatar_id}; prep_frames={prep_frames}; "
             f"bbox_shift={bbox_shift}; parsing_mode={parsing_mode}"
@@ -525,9 +597,11 @@ def run_realtime_job(
     out = avatar.inference(
         audio_path, out_vid_base, fps=fps, skip_save_images=ctx.skip_save_images
     )
+    mark_job("inference_returned", out=out)
     if not out:
         raise RuntimeError("realtime inference produced no video (check skip_save_images)")
 
     result_copy = os.path.join(work_dir, "result.mp4")
     shutil.copy2(out, result_copy)
+    mark_job("result_copied_to_work_dir", result_copy=result_copy)
     return result_copy, info, persist_avatar_id

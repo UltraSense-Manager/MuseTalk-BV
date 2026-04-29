@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -445,7 +446,13 @@ def _run_contract_muxed_job(
 
     try:
         set_status("processing")
+        t0 = time.perf_counter()
         vpath, apath = demux_muxed_mp4(muxed_path, Path(work_dir))
+        t1 = time.perf_counter()
+        print(
+            f"[job {job_id}] contract demux_muxed_mp4 dt={t1 - t0:.3f}s",
+            flush=True,
+        )
         out_path, bbox_text = inference_fn(
             apath,
             vpath,
@@ -454,6 +461,12 @@ def _run_contract_muxed_job(
             "jaw",
             90,
             90,
+        )
+        t2 = time.perf_counter()
+        print(
+            f"[job {job_id}] contract inference_fn dt={t2 - t1:.3f}s "
+            f"total={t2 - t0:.3f}s",
+            flush=True,
         )
         set_status(
             "done",
@@ -495,6 +508,7 @@ def _run_job_background(
         set_status("processing", message="worker started")
         print(f"[job {job_id}] /api/job entering inference()", flush=True)
         set_status("processing", message="running inference")
+        t_inf = time.perf_counter()
         out_path, bbox_text = inference_fn(
             audio_path,
             video_path,
@@ -505,7 +519,11 @@ def _run_job_background(
             right_cheek_width,
             resolution_scale=resolution_scale,
         )
-        print(f"[job {job_id}] /api/job inference done: {out_path}", flush=True)
+        print(
+            f"[job {job_id}] /api/job inference_fn wall={time.perf_counter() - t_inf:.3f}s "
+            f"out={out_path}",
+            flush=True,
+        )
         set_status("processing", message="finalizing output")
         set_status(
             "done",
@@ -545,7 +563,13 @@ def _run_realtime_job_background(
                     _JOBS[job_id][k] = v
 
     try:
-        set_status("processing")
+        print(
+            f"[job {job_id}] /api/realtime/job worker started "
+            f"reuse_avatar={reuse_avatar} work_dir={work_dir}",
+            flush=True,
+        )
+        set_status("processing", message="realtime worker started")
+        t_rt = time.perf_counter()
         out_path, bbox_text, _aid = realtime_runner(
             work_dir,
             video_path,
@@ -562,6 +586,11 @@ def _run_realtime_job_background(
             batch_size,
             fps,
             resolution_scale,
+        )
+        print(
+            f"[job {job_id}] /api/realtime/job realtime_runner wall="
+            f"{time.perf_counter() - t_rt:.3f}s out={out_path}",
+            flush=True,
         )
         set_status(
             "done",
