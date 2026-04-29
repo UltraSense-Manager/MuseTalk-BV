@@ -40,8 +40,8 @@ def read_imgs(img_list):
         frames.append(frame)
     return frames
 
-def get_bbox_range(img_list,upperbondrange =0):
-    frames = read_imgs(img_list)
+def get_bbox_range_from_frames(frames, upperbondrange=0):
+    """Same as get_bbox_range but uses in-memory BGR frames (OpenCV layout)."""
     batch_size_fa = 1
     batches = [frames[i:i + batch_size_fa] for i in range(0, len(frames), batch_size_fa)]
     coords_list = []
@@ -77,12 +77,27 @@ def get_bbox_range(img_list,upperbondrange =0):
             if upperbondrange != 0:
                 half_face_coord[1] = upperbondrange+half_face_coord[1] #手动调整  + 向下（偏29）  - 向上（偏28）
 
-    text_range=f"Total frame:「{len(frames)}」 Manually adjust range : [ -{int(sum(average_range_minus) / len(average_range_minus))}~{int(sum(average_range_plus) / len(average_range_plus))} ] , the current value: {upperbondrange}"
+    if not average_range_minus or not average_range_plus:
+        return (
+            f"Total frame:「{len(frames)}」 Manually adjust range : [ n/a ] , "
+            f"the current value: {upperbondrange}"
+        )
+    text_range = (
+        f"Total frame:「{len(frames)}」 Manually adjust range : [ "
+        f"-{int(sum(average_range_minus) / len(average_range_minus))}"
+        f"~{int(sum(average_range_plus) / len(average_range_plus))} ] , "
+        f"the current value: {upperbondrange}"
+    )
     return text_range
-    
 
-def get_landmark_and_bbox(img_list,upperbondrange =0):
+
+def get_bbox_range(img_list, upperbondrange=0):
     frames = read_imgs(img_list)
+    return get_bbox_range_from_frames(frames, upperbondrange)
+
+
+def get_landmark_and_bbox_from_frames(frames, upperbondrange=0):
+    """Landmark + bbox extraction using preloaded BGR frames (same as read_imgs output)."""
     batch_size_fa = 1
     batches = [frames[i:i + batch_size_fa] for i in range(0, len(frames), batch_size_fa)]
     coords_list = []
@@ -132,10 +147,23 @@ def get_landmark_and_bbox(img_list,upperbondrange =0):
                 coords_list += [f_landmark]
     
     print("********************************************bbox_shift parameter adjustment**********************************************************")
-    print(f"Total frame:「{len(frames)}」 Manually adjust range : [ -{int(sum(average_range_minus) / len(average_range_minus))}~{int(sum(average_range_plus) / len(average_range_plus))} ] , the current value: {upperbondrange}")
+    if average_range_minus and average_range_plus:
+        print(
+            f"Total frame:「{len(frames)}」 Manually adjust range : [ "
+            f"-{int(sum(average_range_minus) / len(average_range_minus))}"
+            f"~{int(sum(average_range_plus) / len(average_range_plus))} ] , "
+            f"the current value: {upperbondrange}"
+        )
+    else:
+        print(f"Total frame:「{len(frames)}」 bbox_shift range: n/a , the current value: {upperbondrange}")
     print("*************************************************************************************************************************************")
-    return coords_list,frames
-    
+    return coords_list, frames
+
+
+def get_landmark_and_bbox(img_list, upperbondrange=0):
+    frames = read_imgs(img_list)
+    return get_landmark_and_bbox_from_frames(frames, upperbondrange)
+
 
 if __name__ == "__main__":
     img_list = ["./results/lyria/00000.png","./results/lyria/00001.png","./results/lyria/00002.png","./results/lyria/00003.png"]

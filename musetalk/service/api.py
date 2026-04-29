@@ -120,6 +120,9 @@ def create_service_app(
             "parallel_blend": cfg.enable_parallel_blend,
             "audio_frame_overlap": cfg.enable_parallel_audio_frame_overlap,
             "parallel_realtime_prep": cfg.enable_parallel_realtime_prep,
+            "streaming_standard": cfg.enable_streaming_standard,
+            "streaming_realtime": cfg.enable_streaming_realtime,
+            "streaming_pipe_buffer_frames": cfg.streaming_pipe_buffer_frames,
         }
 
     @app.post("/job", dependencies=[Depends(bearer_dep)])
@@ -252,6 +255,11 @@ def create_service_app(
                 "kind": "standard",
                 "cpu_workers": cfg.cpu_workers,
                 "stage_times": {"upload": round(upload_elapsed, 3)},
+                "pipeline_mode": (
+                    "streaming_standard"
+                    if cfg.enable_streaming_standard
+                    else "legacy"
+                ),
             }
 
         threading.Thread(
@@ -371,6 +379,11 @@ def create_service_app(
                     "use_clone": is_reuse,
                     "cpu_workers": cfg.cpu_workers,
                     "stage_times": {"upload": round(upload_elapsed, 3)},
+                    "pipeline_mode": (
+                        "streaming_realtime"
+                        if cfg.enable_streaming_realtime
+                        else "legacy"
+                    ),
                 }
 
             threading.Thread(
@@ -421,6 +434,8 @@ def create_service_app(
         }
         if info.get("stage_times"):
             out["stage_times"] = info["stage_times"]
+        if info.get("pipeline_mode"):
+            out["pipeline_mode"] = info["pipeline_mode"]
         if info.get("kind"):
             out["kind"] = info["kind"]
         if info.get("user_id"):

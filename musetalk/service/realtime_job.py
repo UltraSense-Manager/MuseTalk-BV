@@ -30,6 +30,11 @@ from musetalk.utils.blending import get_image_blending, get_image_prepare_materi
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen
+from musetalk.service.ffmpeg_pipe import (
+    FFmpegRawVideoWriter,
+    mux_video_with_audio,
+    even_dim as stream_even_dim,
+)
 from musetalk.service.resolution_scale import (
     downscale_png_dir_inplace,
     parse_resolution_scale,
@@ -114,6 +119,8 @@ class RealtimeJobContext:
     timesteps: torch.Tensor
     cpu_workers: int = 2
     enable_parallel_realtime_prep: bool = False
+    enable_streaming_realtime: bool = False
+    streaming_pipe_buffer_frames: int = 4
 
 
 class RealtimeAvatar:
@@ -294,7 +301,10 @@ class RealtimeAvatar:
                 ori_frame, res_frame, bbox, mask, mask_crop_box
             )
 
-            if skip_save_images is False:
+            sw = getattr(self, "_stream_writer", None)
+            if sw is not None:
+                sw.write_frame_bgr(combine_frame)
+            elif skip_save_images is False:
                 cv2.imwrite(
                     f"{self.avatar_path}/tmp/{str(self.idx).zfill(8)}.png",
                     combine_frame,
@@ -308,6 +318,8 @@ class RealtimeAvatar:
         os.makedirs(self.avatar_path + "/tmp", exist_ok=True)
         print("start realtime inference")
         mark = _rt_phase_timer(f"realtime_inference avatar={self.avatar_id}")
+        self._stream_writer = None
+        self._temp_stream_mp4: str | None = None
         whisper_input_features, librosa_length = self.ctx.audio_processor.get_audio_feature(
             audio_path, weight_dtype=self.ctx.weight_dtype
         )
@@ -323,8 +335,48 @@ class RealtimeAvatar:
         )
         mark("whisper_audio_and_chunks", n_chunks=len(whisper_chunks))
         video_num = len(whisper_chunks)
+        if out_vid_name is None or skip_save_images:
+            mark(
+                "early_exit_no_ffmpeg_mux",
+                out_vid_name=out_vid_name,
+                skip_save_images=skip_save_images,
+            )
+            return None
+
         res_frame_queue: queue.Queue[Any] = queue.Queue()
         self.idx = 0
+        use_stream_enc = (
+            self.ctx.enable_streaming_realtime
+            and not skip_save_images
+        )
+        if use_stream_enc:
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-version"],
+                    capture_output=True,
+                    check=True,
+                )
+            except Exception:
+                use_stream_enc = False
+        if use_stream_enc:
+            h0, w0 = self.frame_list_cycle[0].shape[:2]
+            ew, eh = stream_even_dim(w0), stream_even_dim(h0)
+            self._temp_stream_mp4 = os.path.join(self.avatar_path, "temp_stream.mp4")
+            buf = max(
+                256,
+                int(self.ctx.streaming_pipe_buffer_frames) * ew * eh * 3,
+            )
+            self._stream_writer = FFmpegRawVideoWriter(
+                self._temp_stream_mp4,
+                ew,
+                eh,
+                fps=float(fps),
+                bufsize=buf,
+            )
+            print(
+                f"[realtime] pipeline=streaming_realtime encode {ew}x{eh} fps={fps}",
+                flush=True,
+            )
         process_thread = threading.Thread(
             target=self.process_frames,
             args=(res_frame_queue, video_num, skip_save_images),
@@ -364,6 +416,11 @@ class RealtimeAvatar:
                 first_batch = False
         gpu_dt = time.time() - t0
         process_thread.join()
+        if getattr(self, "_stream_writer", None) is not None:
+            try:
+                self._stream_writer.close()
+            finally:
+                self._stream_writer = None
         mark(
             "gpu_loop_and_process_thread_join",
             n_frames=video_num,
@@ -375,58 +432,60 @@ class RealtimeAvatar:
             f"(skip_save_images={skip_save_images})"
         )
 
-        if out_vid_name is None or skip_save_images:
-            mark(
-                "early_exit_no_ffmpeg_mux",
-                out_vid_name=out_vid_name,
-                skip_save_images=skip_save_images,
-            )
-            return None
-
-        tmp_glob = os.path.join(self.avatar_path, "tmp", "%08d.png")
-        temp_mp4 = os.path.join(self.avatar_path, "temp.mp4")
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "warning",
-                "-r",
-                str(fps),
-                "-f",
-                "image2",
-                "-i",
-                tmp_glob,
-                "-vcodec",
-                "libx264",
-                "-vf",
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
-                "-crf",
-                "18",
-                temp_mp4,
-            ],
-            check=True,
-        )
-        mark("ffmpeg_png_to_temp_mp4", temp_mp4=temp_mp4)
         os.makedirs(self.video_out_path, exist_ok=True)
         output_vid = os.path.join(self.video_out_path, out_vid_name + ".mp4")
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "warning",
-                "-i",
-                audio_path,
-                "-i",
-                temp_mp4,
-                output_vid,
-            ],
-            check=True,
-        )
-        mark("ffmpeg_mux_audio_video", output_vid=output_vid)
-        os.remove(temp_mp4)
-        shutil.rmtree(os.path.join(self.avatar_path, "tmp"), ignore_errors=True)
+
+        if self._temp_stream_mp4 is not None:
+            temp_mp4 = self._temp_stream_mp4
+            mark("ffmpeg_rawvideo_to_temp_mp4", temp_mp4=temp_mp4)
+            mux_video_with_audio(temp_mp4, audio_path, output_vid)
+            mark("ffmpeg_mux_audio_video", output_vid=output_vid)
+            if os.path.isfile(temp_mp4):
+                os.remove(temp_mp4)
+            shutil.rmtree(os.path.join(self.avatar_path, "tmp"), ignore_errors=True)
+        else:
+            tmp_glob = os.path.join(self.avatar_path, "tmp", "%08d.png")
+            temp_mp4 = os.path.join(self.avatar_path, "temp.mp4")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-v",
+                    "warning",
+                    "-r",
+                    str(fps),
+                    "-f",
+                    "image2",
+                    "-i",
+                    tmp_glob,
+                    "-vcodec",
+                    "libx264",
+                    "-vf",
+                    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+                    "-crf",
+                    "18",
+                    temp_mp4,
+                ],
+                check=True,
+            )
+            mark("ffmpeg_png_to_temp_mp4", temp_mp4=temp_mp4)
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-v",
+                    "warning",
+                    "-i",
+                    audio_path,
+                    "-i",
+                    temp_mp4,
+                    output_vid,
+                ],
+                check=True,
+            )
+            mark("ffmpeg_mux_audio_video", output_vid=output_vid)
+            os.remove(temp_mp4)
+            shutil.rmtree(os.path.join(self.avatar_path, "tmp"), ignore_errors=True)
         if self.upscale_target_wh is not None:
             uw, uh = self.upscale_target_wh
             tmp_up = os.path.join(self.avatar_path, "upscaled_result.mp4")
@@ -594,6 +653,8 @@ def run_realtime_job(
         timesteps=ctx.timesteps,
         cpu_workers=ctx.cpu_workers,
         enable_parallel_realtime_prep=ctx.enable_parallel_realtime_prep,
+        enable_streaming_realtime=ctx.enable_streaming_realtime,
+        streaming_pipe_buffer_frames=ctx.streaming_pipe_buffer_frames,
     )
     mark_job("context_clone_fp_ready")
     set_stage("preprocess")

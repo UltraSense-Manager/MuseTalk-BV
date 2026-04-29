@@ -310,7 +310,50 @@ def inference(
         output_vid_name = os.path.join(temp_dir, output_basename+".mp4")
     else:
         output_vid_name = os.path.join(temp_dir, args.output_vid_name)
-        
+
+    use_std_stream = bool(
+        getattr(cfg, "enable_streaming_standard", False)
+    ) and fast_check_ffmpeg()
+    if use_std_stream:
+        print("[inference] pipeline=streaming_standard", flush=True)
+        from musetalk.service.standard_streaming_inference import (
+            run_standard_streaming_inference,
+        )
+
+        return run_standard_streaming_inference(
+            audio_path=audio_path,
+            video_path=video_path,
+            bbox_shift=bbox_shift,
+            extra_margin=extra_margin,
+            parsing_mode=parsing_mode,
+            left_cheek_width=left_cheek_width,
+            right_cheek_width=right_cheek_width,
+            resolution_scale=resolution_scale,
+            args=args,
+            job_tag=job_tag,
+            output_basename=output_basename,
+            temp_dir=temp_dir,
+            result_img_save_path=result_img_save_path,
+            crop_coord_save_path=crop_coord_save_path,
+            output_vid_name=output_vid_name,
+            device=device,
+            vae=vae,
+            unet=unet,
+            pe=pe,
+            whisper=whisper,
+            audio_processor=audio_processor,
+            weight_dtype=weight_dtype,
+            timesteps=timesteps,
+            enable_audio_frame_overlap=enable_audio_frame_overlap,
+            streaming_pipe_buffer_frames=int(
+                getattr(cfg, "streaming_pipe_buffer_frames", 4)
+            ),
+            _mark=_mark,
+            _set_stage=_set_stage,
+            _finish_stage=_finish_stage,
+            _format_stage_report=_format_stage_report,
+        )
+
     ############################################## extract frames from source video ##############################################
     if get_file_type(video_path) == "video":
         save_dir_full = os.path.join(temp_dir, f"{input_basename}_{job_tag}")
@@ -710,6 +753,12 @@ def _realtime_api_runner(
         cpu_workers=max(1, int(getattr(svc_cfg, "cpu_workers", 2))),
         enable_parallel_realtime_prep=bool(
             getattr(svc_cfg, "enable_parallel_realtime_prep", False)
+        ),
+        enable_streaming_realtime=bool(
+            getattr(svc_cfg, "enable_streaming_realtime", False)
+        ),
+        streaming_pipe_buffer_frames=int(
+            getattr(svc_cfg, "streaming_pipe_buffer_frames", 4)
         ),
     )
     return run_realtime_job(

@@ -32,6 +32,9 @@ class ServiceConfig:
     enable_parallel_blend: bool
     enable_parallel_audio_frame_overlap: bool
     enable_parallel_realtime_prep: bool
+    enable_streaming_standard: bool
+    enable_streaming_realtime: bool
+    streaming_pipe_buffer_frames: int
 
 
 def load_service_config() -> ServiceConfig:
@@ -49,6 +52,13 @@ def load_service_config() -> ServiceConfig:
     enable_parallel_realtime_prep = _env_truthy(
         "ENABLE_PARALLEL_REALTIME_PREP", default=False
     )
+    enable_streaming_standard = _env_truthy(
+        "ENABLE_STREAMING_STANDARD", default=False
+    )
+    enable_streaming_realtime = _env_truthy(
+        "ENABLE_STREAMING_REALTIME", default=False
+    )
+    streaming_pipe_buffer_frames = max(1, _env_int("STREAMING_PIPE_BUFFER_FRAMES", 4))
 
     # Prefer GRADIO_* to avoid accidental use of OS USER; USER/PASS still supported.
     user = (
@@ -74,4 +84,7 @@ def load_service_config() -> ServiceConfig:
         enable_parallel_blend=enable_parallel_blend,
         enable_parallel_audio_frame_overlap=enable_parallel_audio_frame_overlap,
         enable_parallel_realtime_prep=enable_parallel_realtime_prep,
+        enable_streaming_standard=enable_streaming_standard,
+        enable_streaming_realtime=enable_streaming_realtime,
+        streaming_pipe_buffer_frames=streaming_pipe_buffer_frames,
     )
