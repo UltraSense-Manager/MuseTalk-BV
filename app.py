@@ -363,9 +363,20 @@ def inference(
     for i, res_frame in enumerate(tqdm(res_frame_list)):
         bbox = coord_list_cycle[i%(len(coord_list_cycle))]
         ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])
-        x1, y1, x2, y2 = bbox
-        y2 = y2 + args.extra_margin
-        y2 = min(y2, ori_frame.shape[0])
+        try:
+            x1f, y1f, x2f, y2f = [float(v) for v in bbox]
+            x1, y1, x2, y2 = map(int, [round(x1f), round(y1f), round(x2f), round(y2f)])
+        except Exception as e:
+            print(f"[inference] invalid bbox at frame {i}: {bbox!r} ({e})", flush=True)
+            continue
+
+        y2 = y2 + int(args.extra_margin)
+        # Clamp bbox into current frame bounds and ensure at least 2x2 crop.
+        h, w = ori_frame.shape[:2]
+        x1 = max(0, min(x1, w - 2))
+        x2 = max(x1 + 2, min(x2, w))
+        y1 = max(0, min(y1, h - 2))
+        y2 = max(y1 + 2, min(y2, h))
         try:
             res_frame = cv2.resize(res_frame.astype(np.uint8),(x2-x1,y2-y1))
         except Exception as e:
