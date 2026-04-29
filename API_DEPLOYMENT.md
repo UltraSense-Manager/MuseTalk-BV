@@ -71,6 +71,7 @@ Base URL: same host/port as the app (e.g. `http://127.0.0.1:7860`).
 
 - `GET /api/health` — no bearer; `{"status":"ok"}`.
 - `POST /api/job` — bearer if set; multipart `audio` + `video` plus optional tuning form fields; `202` with `job_id`.
+  - **`resolution_scale`** (string, default `full`) — `full` (100%), `half` (50%), `eighth` (12.5%), `lowest` (~6.25% linear). Frames are processed at the reduced size for speed, then **upscaled to the original video resolution** before the final MP4 is written for download.
 - `GET /api/job/{job_id}` — status JSON.
 - `GET /api/job/{job_id}/download` — MP4 when `done`.
 
@@ -87,6 +88,7 @@ Prepared materials are stored under **`{API_JOB_DIR}/realtime_avatars/{user_id}/
   - `realtime_fps` (int, default `25`, clamped 1–60)
   - **`use_clone`** (form boolean, default `false`) — if `true`, skips video prep and loads latents/masks from persisted clone materials.
   - **`clone_id`** (form string, optional) — clone identifier to use. If omitted/null, server resolves to decoded JWT `sub`/`uid`. Must match `^[a-zA-Z0-9._-]+$`.
+  - **`resolution_scale`** — same presets as `/api/job`. For **new** prep, prep frames are downscaled before landmark/latent work; the final muxed MP4 is upscaled to the **original extracted frame size** before download. For **`use_clone=true`**, upscale uses the width/height stored when that avatar was first prepared (ignored for prep if already on disk).
 - Response **`202`** JSON includes `job_id`, `user_id`, `clone_id`, `"kind": "realtime"`, `realtime_prep_frames`, and `use_clone`.
 - **`GET /api/job/{job_id}`** includes `user_id` and `clone_id` for realtime jobs when known.
 

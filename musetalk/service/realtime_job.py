@@ -29,6 +29,11 @@ from musetalk.utils.blending import get_image_blending, get_image_prepare_materi
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen
+from musetalk.service.resolution_scale import (
+    downscale_png_dir_inplace,
+    parse_resolution_scale,
+    upscale_video_replace_audio,
+)
 
 
 def extract_first_frames_ffmpeg(video_path: str, out_dir: str, n: int) -> None:
@@ -102,11 +107,13 @@ class RealtimeAvatar:
         bbox_shift: float,
         batch_size: int,
         avatar_root: str,
+        upscale_target_wh: tuple[int, int] | None = None,
     ) -> None:
         self.ctx = ctx
         self.avatar_id = avatar_id
         self.video_path = video_path
         self.bbox_shift = bbox_shift
+        self.upscale_target_wh = upscale_target_wh
         self.base_path = avatar_root
         self.avatar_path = self.base_path
         self.full_imgs_path = f"{self.avatar_path}/full_imgs"
@@ -116,12 +123,16 @@ class RealtimeAvatar:
         self.mask_out_path = f"{self.avatar_path}/mask"
         self.mask_coords_path = f"{self.avatar_path}/mask_coords.pkl"
         self.avatar_info_path = f"{self.avatar_path}/avator_info.json"
-        self.avatar_info = {
+        self.avatar_info: dict[str, Any] = {
             "avatar_id": avatar_id,
             "video_path": video_path,
             "bbox_shift": bbox_shift,
             "version": ctx.version,
         }
+        if upscale_target_wh is not None:
+            uw, uh = upscale_target_wh
+            self.avatar_info["upscale_width"] = int(uw)
+            self.avatar_info["upscale_height"] = int(uh)
         self.batch_size = batch_size
         self.idx = 0
         if os.path.exists(self.avatar_path):
@@ -198,6 +209,9 @@ class RealtimeAvatar:
             pickle.dump(self.coord_list_cycle, f)
 
         torch.save(self.input_latent_list_cycle, os.path.join(self.latents_out_path))
+
+        with open(self.avatar_info_path, "w") as f:
+            json.dump(self.avatar_info, f)
 
     def process_frames(
         self, res_frame_queue: queue.Queue, video_len: int, skip_save_images: bool
@@ -339,6 +353,12 @@ class RealtimeAvatar:
         )
         os.remove(temp_mp4)
         shutil.rmtree(os.path.join(self.avatar_path, "tmp"), ignore_errors=True)
+        if self.upscale_target_wh is not None:
+            uw, uh = self.upscale_target_wh
+            tmp_up = os.path.join(self.avatar_path, "upscaled_result.mp4")
+            upscale_video_replace_audio(output_vid, audio_path, uw, uh, tmp_up)
+            os.replace(tmp_up, output_vid)
+            print(f"realtime result upscaled to {uw}x{uh} -> {output_vid}", flush=True)
         print(f"realtime result saved to {output_vid}")
         return output_vid
 
@@ -392,6 +412,16 @@ class RealtimeAvatar:
                 self.avatar_info = json.load(f)
         else:
             self.avatar_info = {"avatar_id": avatar_id, "version": ctx.version}
+        uw = self.avatar_info.get("upscale_width")
+        uh = self.avatar_info.get("upscale_height")
+        try:
+            if uw is not None and uh is not None:
+                iw, ih = int(uw), int(uh)
+                self.upscale_target_wh = (iw, ih) if iw > 1 and ih > 1 else None
+            else:
+                self.upscale_target_wh = None
+        except (TypeError, ValueError):
+            self.upscale_target_wh = None
         return self
 
 
@@ -418,6 +448,7 @@ def run_realtime_job(
     prep_frames: int,
     batch_size: int,
     fps: int,
+    resolution_scale: str = "full",
 ) -> tuple[str, str, str]:
     """
     If ``reuse_avatar`` is False: extract first ``prep_frames`` from ``video_path``,
@@ -455,6 +486,10 @@ def run_realtime_job(
     store = _avatar_store_dir()
     avatar_root = os.path.join(store, persist_avatar_id)
     out_vid_base = "j" + job_id.replace("-", "")
+    try:
+        scale = parse_resolution_scale(resolution_scale)
+    except ValueError as e:
+        raise RuntimeError(str(e)) from e
 
     if reuse_avatar:
         avatar = RealtimeAvatar.from_prepared(
@@ -469,6 +504,9 @@ def run_realtime_job(
             raise FileNotFoundError("video_path required for new avatar preparation")
         frames_dir = os.path.join(work_dir, "prep_frames")
         extract_first_frames_ffmpeg(video_path, frames_dir, prep_frames)
+        upscale_wh: tuple[int, int] | None = None
+        if scale < 1.0 - 1e-9:
+            upscale_wh = downscale_png_dir_inplace(frames_dir, scale)
 
         avatar = RealtimeAvatar(
             ctx,
@@ -477,6 +515,7 @@ def run_realtime_job(
             bbox_shift=bbox_shift,
             batch_size=batch_size,
             avatar_root=avatar_root,
+            upscale_target_wh=upscale_wh,
         )
         info = (
             f"realtime; avatar_id={persist_avatar_id}; prep_frames={prep_frames}; "

@@ -412,6 +412,12 @@ def main() -> int:
         action="store_true",
         help="Realtime: POST use_clone=true to skip video and reuse persisted clone materials",
     )
+    parser.add_argument(
+        "--resolution-scale",
+        default="full",
+        choices=("full", "half", "eighth", "lowest", "50", "12.5"),
+        help="Process at reduced resolution then upscale to full (standard + realtime)",
+    )
 
     args = parser.parse_args()
 
@@ -450,6 +456,7 @@ def main() -> int:
         "parsing_mode": args.parsing_mode,
         "left_cheek_width": str(args.left_cheek_width),
         "right_cheek_width": str(args.right_cheek_width),
+        "resolution_scale": str(args.resolution_scale),
     }
 
     if args.mode == "standard":

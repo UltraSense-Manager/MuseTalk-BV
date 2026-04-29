@@ -178,6 +178,7 @@ from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
 from musetalk.service.config import load_service_config
+from musetalk.service.resolution_scale import downscale_png_dir_inplace, parse_resolution_scale
 
 
 def fast_check_ffmpeg():
@@ -197,6 +198,7 @@ def inference(
     parsing_mode="jaw",
     left_cheek_width=90,
     right_cheek_width=90,
+    resolution_scale: str = "full",
     progress=gr.Progress(track_tqdm=True),
 ):
     print(
@@ -266,7 +268,23 @@ def inference(
         input_img_list = glob.glob(os.path.join(video_path, '*.[jpJP][pnPN]*[gG]'))
         input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
         fps = args.fps
-        
+
+    try:
+        scale = parse_resolution_scale(resolution_scale)
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+    full_target_hw: tuple[int, int] | None = None
+    if scale < 1.0 - 1e-9:
+        if get_file_type(video_path) == "video":
+            full_target_hw = downscale_png_dir_inplace(save_dir_full, scale)
+        else:
+            full_target_hw = downscale_png_dir_inplace(str(video_path), scale)
+        print(
+            f"[inference] resolution_scale={resolution_scale!r} "
+            f"(scale={scale}) upscale target={full_target_hw}",
+            flush=True,
+        )
+
     ############################################## extract audio feature ##############################################
     # Extract audio features
     whisper_input_features, librosa_length = audio_processor.get_audio_feature(audio_path)
@@ -347,7 +365,7 @@ def inference(
         ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])
         x1, y1, x2, y2 = bbox
         y2 = y2 + args.extra_margin
-        y2 = min(y2, frame.shape[0])
+        y2 = min(y2, ori_frame.shape[0])
         try:
             res_frame = cv2.resize(res_frame.astype(np.uint8),(x2-x1,y2-y1))
         except Exception as e:
@@ -394,6 +412,16 @@ def inference(
             , flush=True)
             img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
         normalized_images.append(img)
+
+    if full_target_hw is not None:
+        fw, fh = full_target_hw
+        print(f"[inference] upscaling {len(normalized_images)} frames to {fw}x{fh}", flush=True)
+        upscaled: list = []
+        for img in normalized_images:
+            if img.shape[1] != fw or img.shape[0] != fh:
+                img = cv2.resize(img, (fw, fh), interpolation=cv2.INTER_LANCZOS4)
+            upscaled.append(img)
+        normalized_images = upscaled
 
     # Save video
     imageio.mimwrite(output_video, normalized_images, 'FFMPEG', fps=fps, codec='libx264', pixelformat='yuv420p')
@@ -493,6 +521,7 @@ def _realtime_api_runner(
     prep_frames: int,
     batch_size: int,
     fps: int,
+    resolution_scale: str = "full",
 ) -> tuple[str, str, str]:
     from musetalk.service.realtime_job import RealtimeJobContext, run_realtime_job
 
@@ -534,6 +563,7 @@ def _realtime_api_runner(
         prep_frames,
         batch_size,
         fps,
+        resolution_scale,
     )
 
 

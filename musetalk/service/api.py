@@ -15,6 +15,7 @@ from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
 from musetalk.service.mux_demux import demux_muxed_mp4
+from musetalk.service.resolution_scale import parse_resolution_scale
 
 _JOBS_LOCK = threading.Lock()
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -202,7 +203,15 @@ def create_service_app(
         parsing_mode: str = Form("jaw"),
         left_cheek_width: int = Form(90),
         right_cheek_width: int = Form(90),
+        resolution_scale: str = Form(
+            "full",
+            description="Process at reduced resolution then upscale: full, half, eighth, lowest",
+        ),
     ) -> JSONResponse:
+        try:
+            parse_resolution_scale(resolution_scale)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         job_id = str(uuid.uuid4())
         work = _job_root() / job_id
         work.mkdir(parents=True, exist_ok=False)
@@ -236,6 +245,7 @@ def create_service_app(
                 left_cheek_width,
                 right_cheek_width,
                 inference_fn,
+                resolution_scale,
             ),
             daemon=True,
         ).start()
@@ -268,8 +278,16 @@ def create_service_app(
                 False,
                 description="If true, skip video prep and reuse persisted clone materials.",
             ),
+            resolution_scale: str = Form(
+                "full",
+                description="Prep/infer at reduced res then upscale: full, half, eighth, lowest",
+            ),
             user_id: str = Depends(auth_user_dep),
         ) -> JSONResponse:
+            try:
+                parse_resolution_scale(resolution_scale)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
             prep = max(1, min(300, int(realtime_prep_frames)))
             bs = max(1, min(128, int(realtime_batch_size)))
             fps = max(1, min(60, int(realtime_fps)))
@@ -348,6 +366,7 @@ def create_service_app(
                     bs,
                     fps,
                     realtime_runner,
+                    resolution_scale,
                 ),
                 daemon=True,
             ).start()
@@ -458,6 +477,7 @@ def _run_job_background(
     left_cheek_width: int,
     right_cheek_width: int,
     inference_fn: Callable[..., tuple[str, str]],
+    resolution_scale: str,
 ) -> None:
     def set_status(status: str, **extra: Any) -> None:
         with _JOBS_LOCK:
@@ -483,6 +503,7 @@ def _run_job_background(
             parsing_mode,
             left_cheek_width,
             right_cheek_width,
+            resolution_scale=resolution_scale,
         )
         print(f"[job {job_id}] /api/job inference done: {out_path}", flush=True)
         set_status("processing", message="finalizing output")
@@ -514,6 +535,7 @@ def _run_realtime_job_background(
     batch_size: int,
     fps: int,
     realtime_runner: Callable[..., tuple[str, str, str]],
+    resolution_scale: str,
 ) -> None:
     def set_status(status: str, **extra: Any) -> None:
         with _JOBS_LOCK:
@@ -539,6 +561,7 @@ def _run_realtime_job_background(
             prep_frames,
             batch_size,
             fps,
+            resolution_scale,
         )
         set_status(
             "done",

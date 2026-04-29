@@ -33,6 +33,8 @@ export default function App() {
 
   const [realtime, setRealtime] = useState(true);
   const [prepFrames, setPrepFrames] = useState(30);
+  /** full | half | eighth | lowest — server downscales processing then upscales for download */
+  const [resolutionScale, setResolutionScale] = useState("full");
 
   const [busy, setBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -219,6 +221,7 @@ export default function App() {
         parsing_mode: "jaw",
         left_cheek_width: "90",
         right_cheek_width: "90",
+        resolution_scale: resolutionScale,
       };
 
       setInfo("Submitting job…");
@@ -405,6 +408,25 @@ export default function App() {
             disabled={busy}
           />
           <label htmlFor="rt">Realtime mode (POST /api/realtime/job)</label>
+        </div>
+
+        <div className="field">
+          <label htmlFor="res">Resolution scale (faster at lower; output upscaled to full)</label>
+          <select
+            id="res"
+            value={resolutionScale}
+            onChange={(e) => setResolutionScale(e.target.value)}
+            disabled={busy}
+          >
+            <option value="full">100% full</option>
+            <option value="half">50% (half)</option>
+            <option value="eighth">12.5% (eighth)</option>
+            <option value="lowest">Lowest (~6.25%)</option>
+          </select>
+          <p className="hint">
+            Applies to both standard and realtime. Clone reuse uses the upscale target saved when the
+            avatar was first prepared.
+          </p>
         </div>
 
         <div className={`field ${realtime ? "" : "dimmed"}`}>
