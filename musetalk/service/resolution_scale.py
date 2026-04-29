@@ -9,6 +9,13 @@ import cv2
 import imageio.v2 as imageio
 
 
+def _even_dim(v: int) -> int:
+    iv = int(v)
+    if iv < 2:
+        return 2
+    return iv if iv % 2 == 0 else iv - 1
+
+
 def parse_resolution_scale(name: str) -> float:
     """
     Map API / CLI string to a linear scale in (0, 1].
@@ -48,8 +55,8 @@ def downscale_png_dir_inplace(
         raise RuntimeError(f"no PNG frames under {dir_path!r}")
     first = imageio.imread(files[0])
     full_h, full_w = first.shape[:2]
-    new_w = max(2, int(round(full_w * scale)))
-    new_h = max(2, int(round(full_h * scale)))
+    new_w = _even_dim(int(round(full_w * scale)))
+    new_h = _even_dim(int(round(full_h * scale)))
     for p in files:
         img = imageio.imread(p)
         small = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -67,7 +74,9 @@ def upscale_video_replace_audio(
     """
     Upscale video stream to WxH, then mux original driving audio (one ffmpeg graph).
     """
-    vf = f"scale={width}:{height}:flags=lanczos"
+    even_w = _even_dim(width)
+    even_h = _even_dim(height)
+    vf = f"scale={even_w}:{even_h}:flags=lanczos"
     proc = subprocess.run(
         [
             "ffmpeg",

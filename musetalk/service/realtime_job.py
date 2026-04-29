@@ -328,7 +328,7 @@ class RealtimeAvatar:
                 "-vcodec",
                 "libx264",
                 "-vf",
-                "format=yuv420p",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
                 "-crf",
                 "18",
                 temp_mp4,
