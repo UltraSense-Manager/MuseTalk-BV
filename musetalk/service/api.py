@@ -467,7 +467,14 @@ def _run_job_background(
                     _JOBS[job_id][k] = v
 
     try:
-        set_status("processing")
+        print(
+            f"[job {job_id}] /api/job worker started "
+            f"(audio={audio_path}, video={video_path})",
+            flush=True,
+        )
+        set_status("processing", message="worker started")
+        print(f"[job {job_id}] /api/job entering inference()", flush=True)
+        set_status("processing", message="running inference")
         out_path, bbox_text = inference_fn(
             audio_path,
             video_path,
@@ -477,6 +484,8 @@ def _run_job_background(
             left_cheek_width,
             right_cheek_width,
         )
+        print(f"[job {job_id}] /api/job inference done: {out_path}", flush=True)
+        set_status("processing", message="finalizing output")
         set_status(
             "done",
             result_path=out_path,

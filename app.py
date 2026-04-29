@@ -199,6 +199,11 @@ def inference(
     right_cheek_width=90,
     progress=gr.Progress(track_tqdm=True),
 ):
+    print(
+        f"[inference] start audio={audio_path} video={video_path} "
+        f"bbox_shift={bbox_shift}",
+        flush=True,
+    )
     # Set default parameters, aligned with inference.py
     args_dict = {
         "result_dir": './results/output', 
@@ -218,7 +223,7 @@ def inference(
 
     # Check ffmpeg
     if not fast_check_ffmpeg():
-        print("Warning: Unable to find ffmpeg, please ensure ffmpeg is properly installed")
+        print("Warning: Unable to find ffmpeg, please ensure ffmpeg is properly installed", flush=True)
 
     input_basename = os.path.basename(video_path).split('.')[0]
     audio_basename = os.path.basename(audio_path).split('.')[0]
@@ -278,12 +283,12 @@ def inference(
         
     ############################################## preprocess input image  ##############################################
     if os.path.exists(crop_coord_save_path) and args.use_saved_coord:
-        print("using extracted coordinates")
+        print("using extracted coordinates", flush=True)
         with open(crop_coord_save_path,'rb') as f:
             coord_list = pickle.load(f)
         frame_list = read_imgs(input_img_list)
     else:
-        print("extracting landmarks...time consuming")
+        print("extracting landmarks...time consuming", flush=True)
         coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
         with open(crop_coord_save_path, 'wb') as f:
             pickle.dump(coord_list, f)
@@ -314,7 +319,7 @@ def inference(
     input_latent_list_cycle = input_latent_list + input_latent_list[::-1]
     
     ############################################## inference batch by batch ##############################################
-    print("start inference")
+    print("start inference", flush=True)
     video_num = len(whisper_chunks)
     batch_size = args.batch_size
     gen = datagen(
@@ -336,7 +341,7 @@ def inference(
             res_frame_list.append(res_frame)
             
     ############################################## pad to full image ##############################################
-    print("pad talking image to original video")
+    print("pad talking image to original video", flush=True)
     for i, res_frame in enumerate(tqdm(res_frame_list)):
         bbox = coord_list_cycle[i%(len(coord_list_cycle))]
         ori_frame = copy.deepcopy(frame_list_cycle[i%(len(frame_list_cycle))])
@@ -386,7 +391,7 @@ def inference(
             print(
                 f"warning: frame size mismatch at index {idx}: "
                 f"{img.shape[:2]} -> {(target_h, target_w)}"
-            )
+            , flush=True)
             img = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
         normalized_images.append(img)
 
@@ -407,7 +412,7 @@ def inference(
     # Store frames in list
     frames = normalized_images
     
-    print(len(frames))
+    print(f"[inference] total frames={len(frames)}", flush=True)
 
     # Load the video
     video_clip = VideoFileClip(input_video)
@@ -426,7 +431,7 @@ def inference(
     if os.path.exists(output_video):
         os.remove(output_video)
     #shutil.rmtree(result_img_save_path)
-    print(f"result is save to {output_vid_name}")
+    print(f"result is save to {output_vid_name}", flush=True)
     return output_vid_name, bbox_shift_text
 
 
