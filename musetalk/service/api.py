@@ -98,7 +98,8 @@ def create_service_app(
         f"audio_frame_overlap={cfg.enable_parallel_audio_frame_overlap} "
         f"parallel_realtime_prep={cfg.enable_parallel_realtime_prep} "
         f"standard_batch_size={cfg.standard_batch_size} "
-        f"realtime_batch_size_default={cfg.realtime_batch_size_default}",
+        f"realtime_batch_size_default={cfg.realtime_batch_size_default} "
+        f"landmark_batch_size={cfg.landmark_batch_size}",
         flush=True,
     )
 
@@ -127,6 +128,7 @@ def create_service_app(
             "streaming_pipe_buffer_frames": cfg.streaming_pipe_buffer_frames,
             "standard_batch_size": cfg.standard_batch_size,
             "realtime_batch_size_default": cfg.realtime_batch_size_default,
+            "landmark_batch_size": cfg.landmark_batch_size,
         }
 
     @app.post("/job", dependencies=[Depends(bearer_dep)])

@@ -25,6 +25,13 @@ fa = FaceAlignment(LandmarksType._2D, flip_input=False,device=device)
 # maker if the bbox is not sufficient 
 coord_placeholder = (0.0,0.0,0.0,0.0)
 
+def _landmark_batch_size() -> int:
+    raw = os.environ.get("LANDMARK_BATCH_SIZE", "1").strip() or "1"
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
 def resize_landmark(landmark, w, h, new_w, new_h):
     w_ratio = new_w / w
     h_ratio = new_h / h
@@ -42,7 +49,7 @@ def read_imgs(img_list):
 
 def get_bbox_range_from_frames(frames, upperbondrange=0):
     """Same as get_bbox_range but uses in-memory BGR frames (OpenCV layout)."""
-    batch_size_fa = 1
+    batch_size_fa = _landmark_batch_size()
     batches = [frames[i:i + batch_size_fa] for i in range(0, len(frames), batch_size_fa)]
     coords_list = []
     landmarks = []
@@ -98,7 +105,7 @@ def get_bbox_range(img_list, upperbondrange=0):
 
 def get_landmark_and_bbox_from_frames(frames, upperbondrange=0):
     """Landmark + bbox extraction using preloaded BGR frames (same as read_imgs output)."""
-    batch_size_fa = 1
+    batch_size_fa = _landmark_batch_size()
     batches = [frames[i:i + batch_size_fa] for i in range(0, len(frames), batch_size_fa)]
     coords_list = []
     landmarks = []
