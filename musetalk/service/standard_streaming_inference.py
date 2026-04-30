@@ -169,7 +169,7 @@ def run_standard_streaming_inference(
         with open(crop_coord_save_path, "wb") as f:
             pickle.dump(coord_list, f)
 
-    bbox_shift_text = get_bbox_range_from_frames(frame_list, bbox_shift)
+    bbox_shift_text = ""#get_bbox_range_from_frames(frame_list, bbox_shift)
     _mark(
         "landmarks_read_or_extract",
         n_coords=len(coord_list),
