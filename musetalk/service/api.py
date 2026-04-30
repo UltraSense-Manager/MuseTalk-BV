@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
+from musetalk.service.ffmpeg_pipe import has_nvenc_encoder
 from musetalk.service.mux_demux import demux_muxed_mp4
 from musetalk.service.resolution_scale import parse_resolution_scale
 
@@ -91,6 +92,13 @@ def create_service_app(
     realtime_runner: Callable[..., tuple[str, str, str]] | None = None,
 ) -> FastAPI:
     cfg = config or load_service_config()
+    nvenc_available = has_nvenc_encoder()
+    requested_encoder = (cfg.ffmpeg_video_encoder or "").strip() or "h264_nvenc"
+    effective_encoder = (
+        "libx264"
+        if requested_encoder.endswith("_nvenc") and not nvenc_available
+        else requested_encoder
+    )
     print(
         "[service-config] "
         f"cpu_workers={cfg.cpu_workers} "
@@ -99,7 +107,10 @@ def create_service_app(
         f"parallel_realtime_prep={cfg.enable_parallel_realtime_prep} "
         f"standard_batch_size={cfg.standard_batch_size} "
         f"realtime_batch_size_default={cfg.realtime_batch_size_default} "
-        f"landmark_batch_size={cfg.landmark_batch_size}",
+        f"landmark_batch_size={cfg.landmark_batch_size} "
+        f"ffmpeg_encoder_requested={requested_encoder} "
+        f"ffmpeg_encoder_effective={effective_encoder} "
+        f"ffmpeg_nvenc_available={nvenc_available}",
         flush=True,
     )
 
@@ -126,6 +137,11 @@ def create_service_app(
             "streaming_standard": cfg.enable_streaming_standard,
             "streaming_realtime": cfg.enable_streaming_realtime,
             "streaming_pipe_buffer_frames": cfg.streaming_pipe_buffer_frames,
+            "ffmpeg_video_encoder": cfg.ffmpeg_video_encoder,
+            "ffmpeg_encoder_preset": cfg.ffmpeg_encoder_preset,
+            "ffmpeg_encoder_crf": cfg.ffmpeg_encoder_crf,
+            "ffmpeg_encoder_cq": cfg.ffmpeg_encoder_cq,
+            "ffmpeg_use_gpu_scale": cfg.ffmpeg_use_gpu_scale,
             "standard_batch_size": cfg.standard_batch_size,
             "realtime_batch_size_default": cfg.realtime_batch_size_default,
             "landmark_batch_size": cfg.landmark_batch_size,

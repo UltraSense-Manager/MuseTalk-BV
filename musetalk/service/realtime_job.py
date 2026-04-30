@@ -32,6 +32,7 @@ from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen
 from musetalk.service.ffmpeg_pipe import (
     FFmpegRawVideoWriter,
+    has_nvenc_encoder,
     mux_video_with_audio,
     even_dim as stream_even_dim,
 )
@@ -121,6 +122,11 @@ class RealtimeJobContext:
     enable_parallel_realtime_prep: bool = False
     enable_streaming_realtime: bool = False
     streaming_pipe_buffer_frames: int = 4
+    ffmpeg_video_encoder: str = "h264_nvenc"
+    ffmpeg_encoder_preset: str = "p5"
+    ffmpeg_encoder_crf: str = "18"
+    ffmpeg_encoder_cq: str = "23"
+    ffmpeg_use_gpu_scale: bool = True
 
 
 class RealtimeAvatar:
@@ -366,15 +372,27 @@ class RealtimeAvatar:
                 256,
                 int(self.ctx.streaming_pipe_buffer_frames) * ew * eh * 3,
             )
+            video_encoder = self.ctx.ffmpeg_video_encoder
+            if video_encoder.endswith("_nvenc") and not has_nvenc_encoder():
+                print(
+                    f"[realtime] requested encoder '{video_encoder}' unavailable; fallback=libx264",
+                    flush=True,
+                )
+                video_encoder = "libx264"
             self._stream_writer = FFmpegRawVideoWriter(
                 self._temp_stream_mp4,
                 ew,
                 eh,
                 fps=float(fps),
+                codec=video_encoder,
+                preset=self.ctx.ffmpeg_encoder_preset,
+                crf=self.ctx.ffmpeg_encoder_crf,
+                cq=self.ctx.ffmpeg_encoder_cq,
+                use_gpu_scale=self.ctx.ffmpeg_use_gpu_scale,
                 bufsize=buf,
             )
             print(
-                f"[realtime] pipeline=streaming_realtime encode {ew}x{eh} fps={fps}",
+                f"[realtime] pipeline=streaming_realtime encode {ew}x{eh} fps={fps} encoder={video_encoder}",
                 flush=True,
             )
         process_thread = threading.Thread(
@@ -655,6 +673,11 @@ def run_realtime_job(
         enable_parallel_realtime_prep=ctx.enable_parallel_realtime_prep,
         enable_streaming_realtime=ctx.enable_streaming_realtime,
         streaming_pipe_buffer_frames=ctx.streaming_pipe_buffer_frames,
+        ffmpeg_video_encoder=ctx.ffmpeg_video_encoder,
+        ffmpeg_encoder_preset=ctx.ffmpeg_encoder_preset,
+        ffmpeg_encoder_crf=ctx.ffmpeg_encoder_crf,
+        ffmpeg_encoder_cq=ctx.ffmpeg_encoder_cq,
+        ffmpeg_use_gpu_scale=ctx.ffmpeg_use_gpu_scale,
     )
     mark_job("context_clone_fp_ready")
     set_stage("preprocess")

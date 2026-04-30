@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from functools import lru_cache
 from typing import IO
 
 import cv2
@@ -27,15 +28,36 @@ class FFmpegRawVideoWriter:
         width: int,
         height: int,
         fps: float = 25.0,
+        codec: str = "h264_nvenc",
+        preset: str = "p5",
         crf: str = "18",
+        cq: str = "23",
+        scale_to: tuple[int, int] | None = None,
+        use_gpu_scale: bool = True,
         bufsize: int = 0,
     ) -> None:
         self.out_path = out_mp4
         self.w = even_dim(width)
         self.h = even_dim(height)
         self.fps = float(fps)
+        self.codec = codec.strip() or "h264_nvenc"
+        self.preset = preset.strip() or "p5"
+        self.crf = crf.strip() or "18"
+        self.cq = cq.strip() or "23"
+        self.scale_to = (
+            (even_dim(scale_to[0]), even_dim(scale_to[1])) if scale_to is not None else None
+        )
+        self.use_gpu_scale = bool(use_gpu_scale)
         self._proc: subprocess.Popen | None = None
         self._stdin: IO[bytes] | None = None
+        vf_parts = []
+        if self.scale_to is not None:
+            tw, th = self.scale_to
+            if self.use_gpu_scale and self.codec.endswith("_nvenc"):
+                vf_parts.append(f"scale_cuda={tw}:{th}")
+            else:
+                vf_parts.append(f"scale={tw}:{th}:flags=bilinear")
+        vf_parts.append("format=yuv420p")
         cmd = [
             "ffmpeg",
             "-y",
@@ -44,7 +66,7 @@ class FFmpegRawVideoWriter:
             "-f",
             "rawvideo",
             "-pixel_format",
-            "rgb24",
+            "bgr24",
             "-video_size",
             f"{self.w}x{self.h}",
             "-framerate",
@@ -52,11 +74,23 @@ class FFmpegRawVideoWriter:
             "-i",
             "-",
             "-vf",
-            "format=yuv420p",
+            ",".join(vf_parts),
             "-c:v",
-            "libx264",
-            "-crf",
-            crf,
+            self.codec,
+            "-preset",
+            self.preset,
+        ]
+        if self.codec.endswith("_nvenc"):
+            cmd += [
+                "-cq",
+                self.cq,
+            ]
+        else:
+            cmd += [
+                "-crf",
+                self.crf,
+            ]
+        cmd += [
             "-pix_fmt",
             "yuv420p",
             out_mp4,
@@ -78,10 +112,9 @@ class FFmpegRawVideoWriter:
         h, w = bgr.shape[:2]
         if w != self.w or h != self.h:
             bgr = cv2.resize(bgr, (self.w, self.h), interpolation=cv2.INTER_AREA)
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        if not rgb.flags["C_CONTIGUOUS"]:
-            rgb = np.ascontiguousarray(rgb)
-        self._stdin.write(rgb.tobytes())
+        if not bgr.flags["C_CONTIGUOUS"]:
+            bgr = np.ascontiguousarray(bgr)
+        self._stdin.write(bgr.tobytes())
 
     def close(self) -> None:
         if self._stdin is not None:
@@ -137,3 +170,20 @@ def mux_video_with_audio(video_mp4: str, audio_path: str, out_mp4: str) -> None:
         raise RuntimeError(
             f"ffmpeg mux failed ({proc.returncode}): {proc.stderr[-2000:]!r}"
         )
+
+
+@lru_cache(maxsize=1)
+def has_nvenc_encoder() -> bool:
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    out = f"{proc.stdout}\n{proc.stderr}"
+    return "h264_nvenc" in out

@@ -35,6 +35,11 @@ class ServiceConfig:
     enable_streaming_standard: bool
     enable_streaming_realtime: bool
     streaming_pipe_buffer_frames: int
+    ffmpeg_video_encoder: str
+    ffmpeg_encoder_preset: str
+    ffmpeg_encoder_crf: str
+    ffmpeg_encoder_cq: str
+    ffmpeg_use_gpu_scale: bool
     standard_batch_size: int
     realtime_batch_size_default: int
     landmark_batch_size: int
@@ -62,6 +67,11 @@ def load_service_config() -> ServiceConfig:
         "ENABLE_STREAMING_REALTIME", default=False
     )
     streaming_pipe_buffer_frames = max(1, _env_int("STREAMING_PIPE_BUFFER_FRAMES", 4))
+    ffmpeg_video_encoder = os.environ.get("FFMPEG_VIDEO_ENCODER", "h264_nvenc").strip() or "h264_nvenc"
+    ffmpeg_encoder_preset = os.environ.get("FFMPEG_ENCODER_PRESET", "p5").strip() or "p5"
+    ffmpeg_encoder_crf = os.environ.get("FFMPEG_ENCODER_CRF", "18").strip() or "18"
+    ffmpeg_encoder_cq = os.environ.get("FFMPEG_ENCODER_CQ", "23").strip() or "23"
+    ffmpeg_use_gpu_scale = _env_truthy("FFMPEG_USE_GPU_SCALE", default=True)
     standard_batch_size = max(1, _env_int("STANDARD_BATCH_SIZE", 8))
     realtime_batch_size_default = max(1, _env_int("REALTIME_BATCH_SIZE_DEFAULT", 20))
     landmark_batch_size = max(1, _env_int("LANDMARK_BATCH_SIZE", 1))
@@ -93,6 +103,11 @@ def load_service_config() -> ServiceConfig:
         enable_streaming_standard=enable_streaming_standard,
         enable_streaming_realtime=enable_streaming_realtime,
         streaming_pipe_buffer_frames=streaming_pipe_buffer_frames,
+        ffmpeg_video_encoder=ffmpeg_video_encoder,
+        ffmpeg_encoder_preset=ffmpeg_encoder_preset,
+        ffmpeg_encoder_crf=ffmpeg_encoder_crf,
+        ffmpeg_encoder_cq=ffmpeg_encoder_cq,
+        ffmpeg_use_gpu_scale=ffmpeg_use_gpu_scale,
         standard_batch_size=standard_batch_size,
         realtime_batch_size_default=realtime_batch_size_default,
         landmark_batch_size=landmark_batch_size,

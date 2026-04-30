@@ -348,6 +348,21 @@ def inference(
             streaming_pipe_buffer_frames=int(
                 getattr(cfg, "streaming_pipe_buffer_frames", 4)
             ),
+            ffmpeg_video_encoder=str(
+                getattr(cfg, "ffmpeg_video_encoder", "h264_nvenc")
+            ),
+            ffmpeg_encoder_preset=str(
+                getattr(cfg, "ffmpeg_encoder_preset", "p5")
+            ),
+            ffmpeg_encoder_crf=str(
+                getattr(cfg, "ffmpeg_encoder_crf", "18")
+            ),
+            ffmpeg_encoder_cq=str(
+                getattr(cfg, "ffmpeg_encoder_cq", "23")
+            ),
+            ffmpeg_use_gpu_scale=bool(
+                getattr(cfg, "ffmpeg_use_gpu_scale", True)
+            ),
             _mark=_mark,
             _set_stage=_set_stage,
             _finish_stage=_finish_stage,
@@ -760,6 +775,21 @@ def _realtime_api_runner(
         ),
         streaming_pipe_buffer_frames=int(
             getattr(svc_cfg, "streaming_pipe_buffer_frames", 4)
+        ),
+        ffmpeg_video_encoder=str(
+            getattr(svc_cfg, "ffmpeg_video_encoder", "h264_nvenc")
+        ),
+        ffmpeg_encoder_preset=str(
+            getattr(svc_cfg, "ffmpeg_encoder_preset", "p5")
+        ),
+        ffmpeg_encoder_crf=str(
+            getattr(svc_cfg, "ffmpeg_encoder_crf", "18")
+        ),
+        ffmpeg_encoder_cq=str(
+            getattr(svc_cfg, "ffmpeg_encoder_cq", "23")
+        ),
+        ffmpeg_use_gpu_scale=bool(
+            getattr(svc_cfg, "ffmpeg_use_gpu_scale", True)
         ),
     )
     return run_realtime_job(

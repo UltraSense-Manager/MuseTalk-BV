@@ -20,8 +20,13 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from musetalk.service.ffmpeg_pipe import FFmpegRawVideoWriter, mux_video_with_audio, even_dim
-from musetalk.service.resolution_scale import parse_resolution_scale, upscale_video_stream
+from musetalk.service.ffmpeg_pipe import (
+    FFmpegRawVideoWriter,
+    has_nvenc_encoder,
+    mux_video_with_audio,
+    even_dim,
+)
+from musetalk.service.resolution_scale import parse_resolution_scale
 from musetalk.utils.preprocessing import (
     coord_placeholder,
     get_bbox_range_from_frames,
@@ -60,6 +65,11 @@ def run_standard_streaming_inference(
     timesteps: torch.Tensor,
     enable_audio_frame_overlap: bool,
     streaming_pipe_buffer_frames: int,
+    ffmpeg_video_encoder: str,
+    ffmpeg_encoder_preset: str,
+    ffmpeg_encoder_crf: str,
+    ffmpeg_encoder_cq: str,
+    ffmpeg_use_gpu_scale: bool,
     _mark: Callable[..., None],
     _set_stage: Callable[[str], None],
     _finish_stage: Callable[[], None],
@@ -232,9 +242,21 @@ def run_standard_streaming_inference(
 
     _set_stage("pad")
     h0, w0 = frame_list_cycle[0].shape[:2]
-    ew, eh = even_dim(w0), even_dim(h0)
+    src_w, src_h = even_dim(w0), even_dim(h0)
+    target_wh = None
+    if full_target_hw is not None:
+        fw, fh = full_target_hw
+        target_wh = (even_dim(fw), even_dim(fh))
+    ew, eh = target_wh if target_wh is not None else (src_w, src_h)
     temp_mp4 = os.path.join(temp_dir, f"stream_temp_{job_tag}.mp4")
-    buf = max(256, int(streaming_pipe_buffer_frames) * ew * eh * 3)
+    buf = max(256, int(streaming_pipe_buffer_frames) * src_w * src_h * 3)
+    video_encoder = ffmpeg_video_encoder
+    if video_encoder.endswith("_nvenc") and not has_nvenc_encoder():
+        print(
+            f"[inference] requested encoder '{video_encoder}' unavailable; fallback=libx264",
+            flush=True,
+        )
+        video_encoder = "libx264"
 
     def _blend_one(i: int, res_frame: np.ndarray) -> np.ndarray | None:
         bbox = coord_list_cycle[i % (len(coord_list_cycle))]
@@ -260,13 +282,25 @@ def run_standard_streaming_inference(
         combine_frame = get_image(
             ori_frame, res_frame, [x1, y1, x2, y2], mode=args.parsing_mode, fp=fp
         )
-        if combine_frame.shape[1] != ew or combine_frame.shape[0] != eh:
+        if combine_frame.shape[1] != src_w or combine_frame.shape[0] != src_h:
             combine_frame = cv2.resize(
-                combine_frame, (ew, eh), interpolation=cv2.INTER_AREA
+                combine_frame, (src_w, src_h), interpolation=cv2.INTER_AREA
             )
         return combine_frame
 
-    writer = FFmpegRawVideoWriter(temp_mp4, ew, eh, fps=fps, bufsize=buf)
+    writer = FFmpegRawVideoWriter(
+        temp_mp4,
+        src_w,
+        src_h,
+        fps=fps,
+        codec=video_encoder,
+        preset=ffmpeg_encoder_preset,
+        crf=ffmpeg_encoder_crf,
+        cq=ffmpeg_encoder_cq,
+        scale_to=target_wh,
+        use_gpu_scale=ffmpeg_use_gpu_scale,
+        bufsize=buf,
+    )
     try:
         for i, res_frame in enumerate(tqdm(res_frame_list)):
             fr = _blend_one(i, res_frame)
@@ -275,15 +309,22 @@ def run_standard_streaming_inference(
     finally:
         writer.close()
 
-    _mark("ffmpeg_rawvideo_encode", path=temp_mp4, streaming=True)
+    _mark(
+        "ffmpeg_rawvideo_encode",
+        path=temp_mp4,
+        streaming=True,
+        encoder=video_encoder,
+        preset=ffmpeg_encoder_preset,
+        target=target_wh,
+    )
 
     _set_stage("export")
     if full_target_hw is not None:
-        fw, fh = full_target_hw
-        upscaled_temp = os.path.join(temp_dir, f"stream_upscaled_{job_tag}.mp4")
-        upscale_video_stream(temp_mp4, fw, fh, upscaled_temp)
-        os.replace(upscaled_temp, temp_mp4)
-        _mark("ffmpeg_upscale_video_stream", target=f"{fw}x{fh}", streaming=True)
+        _mark(
+            "ffmpeg_upscale_fused_into_encode",
+            target=f"{target_wh[0]}x{target_wh[1]}",
+            streaming=True,
+        )
     mux_video_with_audio(temp_mp4, audio_path, output_vid_name)
     _mark("ffmpeg_mux_final", path=output_vid_name, streaming=True)
 
