@@ -53,7 +53,11 @@ class FFmpegRawVideoWriter:
         vf_parts = []
         if self.scale_to is not None:
             tw, th = self.scale_to
-            if self.use_gpu_scale and self.codec.endswith("_nvenc"):
+            if (
+                self.use_gpu_scale
+                and self.codec.endswith("_nvenc")
+                and has_scale_cuda_filter()
+            ):
                 vf_parts.append(f"scale_cuda={tw}:{th}")
             else:
                 vf_parts.append(f"scale={tw}:{th}:flags=bilinear")
@@ -187,3 +191,20 @@ def has_nvenc_encoder() -> bool:
         return False
     out = f"{proc.stdout}\n{proc.stderr}"
     return "h264_nvenc" in out
+
+
+@lru_cache(maxsize=1)
+def has_scale_cuda_filter() -> bool:
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    if proc.returncode != 0:
+        return False
+    out = f"{proc.stdout}\n{proc.stderr}"
+    return "scale_cuda" in out

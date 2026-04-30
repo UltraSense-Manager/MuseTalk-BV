@@ -23,6 +23,7 @@ from tqdm import tqdm
 from musetalk.service.ffmpeg_pipe import (
     FFmpegRawVideoWriter,
     has_nvenc_encoder,
+    has_scale_cuda_filter,
     mux_video_with_audio,
     even_dim,
 )
@@ -257,6 +258,14 @@ def run_standard_streaming_inference(
             flush=True,
         )
         video_encoder = "libx264"
+    use_gpu_scale_effective = bool(ffmpeg_use_gpu_scale)
+    if target_wh is not None and use_gpu_scale_effective and video_encoder.endswith("_nvenc"):
+        if not has_scale_cuda_filter():
+            print(
+                "[inference] scale_cuda filter unavailable; fallback=CPU scale in fused encode",
+                flush=True,
+            )
+            use_gpu_scale_effective = False
 
     def _blend_one(i: int, res_frame: np.ndarray) -> np.ndarray | None:
         bbox = coord_list_cycle[i % (len(coord_list_cycle))]
@@ -298,7 +307,7 @@ def run_standard_streaming_inference(
         crf=ffmpeg_encoder_crf,
         cq=ffmpeg_encoder_cq,
         scale_to=target_wh,
-        use_gpu_scale=ffmpeg_use_gpu_scale,
+        use_gpu_scale=use_gpu_scale_effective,
         bufsize=buf,
     )
     try:
@@ -316,6 +325,7 @@ def run_standard_streaming_inference(
         encoder=video_encoder,
         preset=ffmpeg_encoder_preset,
         target=target_wh,
+        gpu_scale=use_gpu_scale_effective,
     )
 
     _set_stage("export")

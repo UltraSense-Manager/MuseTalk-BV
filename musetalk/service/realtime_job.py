@@ -33,6 +33,7 @@ from musetalk.utils.utils import datagen
 from musetalk.service.ffmpeg_pipe import (
     FFmpegRawVideoWriter,
     has_nvenc_encoder,
+    has_scale_cuda_filter,
     mux_video_with_audio,
     even_dim as stream_even_dim,
 )
@@ -379,6 +380,14 @@ class RealtimeAvatar:
                     flush=True,
                 )
                 video_encoder = "libx264"
+            use_gpu_scale_effective = bool(self.ctx.ffmpeg_use_gpu_scale)
+            if use_gpu_scale_effective and video_encoder.endswith("_nvenc"):
+                if not has_scale_cuda_filter():
+                    print(
+                        "[realtime] scale_cuda filter unavailable; fallback=CPU scale",
+                        flush=True,
+                    )
+                    use_gpu_scale_effective = False
             self._stream_writer = FFmpegRawVideoWriter(
                 self._temp_stream_mp4,
                 ew,
@@ -388,7 +397,7 @@ class RealtimeAvatar:
                 preset=self.ctx.ffmpeg_encoder_preset,
                 crf=self.ctx.ffmpeg_encoder_crf,
                 cq=self.ctx.ffmpeg_encoder_cq,
-                use_gpu_scale=self.ctx.ffmpeg_use_gpu_scale,
+                use_gpu_scale=use_gpu_scale_effective,
                 bufsize=buf,
             )
             print(
