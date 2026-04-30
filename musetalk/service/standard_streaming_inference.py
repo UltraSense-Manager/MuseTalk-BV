@@ -25,7 +25,7 @@ from musetalk.service.resolution_scale import parse_resolution_scale, upscale_vi
 from musetalk.utils.preprocessing import (
     coord_placeholder,
     get_bbox_range_from_frames,
-    get_landmark_and_bbox_from_frames,
+    get_landmark_and_bbox_with_range_from_frames,
     read_imgs,
 )
 from musetalk.utils.blending import get_image
@@ -165,11 +165,13 @@ def run_standard_streaming_inference(
     else:
         print("extracting landmarks...time consuming", flush=True)
         used_saved_coord = False
-        coord_list, frame_list = get_landmark_and_bbox_from_frames(frames, bbox_shift)
+        coord_list, frame_list, bbox_shift_text = get_landmark_and_bbox_with_range_from_frames(
+            frames, bbox_shift
+        )
         with open(crop_coord_save_path, "wb") as f:
             pickle.dump(coord_list, f)
-
-    bbox_shift_text = ""#get_bbox_range_from_frames(frame_list, bbox_shift)
+    if used_saved_coord:
+        bbox_shift_text = get_bbox_range_from_frames(frame_list, bbox_shift)
     _mark(
         "landmarks_read_or_extract",
         n_coords=len(coord_list),

@@ -18,7 +18,7 @@ def even_dim(v: int) -> int:
 
 class FFmpegRawVideoWriter:
     """
-    Stream BGR uint8 frames (HxWx3) to libx264 via rawvideo rgb24 stdin.
+    Stream BGR uint8 frames (HxWx3) to libx264 via rawvideo bgr24 stdin.
     """
 
     def __init__(
@@ -44,15 +44,13 @@ class FFmpegRawVideoWriter:
             "-f",
             "rawvideo",
             "-pixel_format",
-            "rgb24",
+            "bgr24",
             "-video_size",
             f"{self.w}x{self.h}",
             "-framerate",
             str(self.fps),
             "-i",
             "-",
-            "-vf",
-            "format=yuv420p",
             "-c:v",
             "libx264",
             "-crf",
@@ -78,10 +76,9 @@ class FFmpegRawVideoWriter:
         h, w = bgr.shape[:2]
         if w != self.w or h != self.h:
             bgr = cv2.resize(bgr, (self.w, self.h), interpolation=cv2.INTER_AREA)
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        if not rgb.flags["C_CONTIGUOUS"]:
-            rgb = np.ascontiguousarray(rgb)
-        self._stdin.write(rgb.tobytes())
+        if not bgr.flags["C_CONTIGUOUS"]:
+            bgr = np.ascontiguousarray(bgr)
+        self._stdin.write(bgr.tobytes())
 
     def close(self) -> None:
         if self._stdin is not None:

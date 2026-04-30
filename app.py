@@ -178,7 +178,13 @@ from musetalk.utils.blending import get_image
 from musetalk.utils.face_parsing import FaceParsing
 from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
-from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
+from musetalk.utils.preprocessing import (
+    get_landmark_and_bbox,
+    get_landmark_and_bbox_with_range_from_frames,
+    read_imgs,
+    coord_placeholder,
+    get_bbox_range,
+)
 from musetalk.service.config import load_service_config
 from musetalk.service.resolution_scale import (
     downscale_png_dir_inplace,
@@ -435,11 +441,14 @@ def inference(
     else:
         print("extracting landmarks...time consuming", flush=True)
         used_saved_coord = False
-        coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
+        frame_list = read_imgs(input_img_list)
+        coord_list, frame_list, bbox_shift_text = get_landmark_and_bbox_with_range_from_frames(
+            frame_list, bbox_shift
+        )
         with open(crop_coord_save_path, 'wb') as f:
             pickle.dump(coord_list, f)
-    #bbox_shift_text = get_bbox_range(input_img_list, bbox_shift) This is redundant, comented.
-    bbox_shift_text = ""
+    if used_saved_coord:
+        bbox_shift_text = get_bbox_range(input_img_list, bbox_shift)
     _mark(
         "landmarks_read_or_extract",
         n_coords=len(coord_list),
