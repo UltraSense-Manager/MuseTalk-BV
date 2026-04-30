@@ -35,6 +35,8 @@ class ServiceConfig:
     enable_streaming_standard: bool
     enable_streaming_realtime: bool
     streaming_pipe_buffer_frames: int
+    standard_batch_size: int
+    realtime_batch_size_default: int
 
 
 def load_service_config() -> ServiceConfig:
@@ -59,6 +61,8 @@ def load_service_config() -> ServiceConfig:
         "ENABLE_STREAMING_REALTIME", default=False
     )
     streaming_pipe_buffer_frames = max(1, _env_int("STREAMING_PIPE_BUFFER_FRAMES", 4))
+    standard_batch_size = max(1, _env_int("STANDARD_BATCH_SIZE", 8))
+    realtime_batch_size_default = max(1, _env_int("REALTIME_BATCH_SIZE_DEFAULT", 20))
 
     # Prefer GRADIO_* to avoid accidental use of OS USER; USER/PASS still supported.
     user = (
@@ -87,4 +91,6 @@ def load_service_config() -> ServiceConfig:
         enable_streaming_standard=enable_streaming_standard,
         enable_streaming_realtime=enable_streaming_realtime,
         streaming_pipe_buffer_frames=streaming_pipe_buffer_frames,
+        standard_batch_size=standard_batch_size,
+        realtime_batch_size_default=realtime_batch_size_default,
     )

@@ -415,7 +415,7 @@ def main() -> int:
     parser.add_argument(
         "--resolution-scale",
         default="full",
-        choices=("full", "half", "eighth", "lowest", "50", "12.5"),
+        choices=("full", "half", "quarter", "eighth", "sixteenth", "50", "25", "12.5", "1.5625"),
         help="Process at reduced resolution then upscale to full (standard + realtime)",
     )
 

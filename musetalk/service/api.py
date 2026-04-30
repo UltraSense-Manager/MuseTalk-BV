@@ -96,7 +96,9 @@ def create_service_app(
         f"cpu_workers={cfg.cpu_workers} "
         f"parallel_blend={cfg.enable_parallel_blend} "
         f"audio_frame_overlap={cfg.enable_parallel_audio_frame_overlap} "
-        f"parallel_realtime_prep={cfg.enable_parallel_realtime_prep}",
+        f"parallel_realtime_prep={cfg.enable_parallel_realtime_prep} "
+        f"standard_batch_size={cfg.standard_batch_size} "
+        f"realtime_batch_size_default={cfg.realtime_batch_size_default}",
         flush=True,
     )
 
@@ -123,6 +125,8 @@ def create_service_app(
             "streaming_standard": cfg.enable_streaming_standard,
             "streaming_realtime": cfg.enable_streaming_realtime,
             "streaming_pipe_buffer_frames": cfg.streaming_pipe_buffer_frames,
+            "standard_batch_size": cfg.standard_batch_size,
+            "realtime_batch_size_default": cfg.realtime_batch_size_default,
         }
 
     @app.post("/job", dependencies=[Depends(bearer_dep)])
@@ -297,7 +301,7 @@ def create_service_app(
             left_cheek_width: int = Form(90),
             right_cheek_width: int = Form(90),
             realtime_prep_frames: int = Form(30),
-            realtime_batch_size: int = Form(20),
+            realtime_batch_size: int = Form(cfg.realtime_batch_size_default),
             realtime_fps: int = Form(25),
             clone_id: Optional[str] = Form(
                 None,

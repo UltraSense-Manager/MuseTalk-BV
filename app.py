@@ -264,7 +264,7 @@ def inference(
     args_dict = {
         "result_dir": './results/output', 
         "fps": 25, 
-        "batch_size": 8, 
+        "batch_size": int(getattr(globals().get("svc_cfg"), "standard_batch_size", 8)),
         "output_vid_name": '', 
         "use_saved_coord": False,
         "audio_padding_length_left": 2,
