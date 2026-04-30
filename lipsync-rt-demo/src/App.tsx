@@ -420,8 +420,9 @@ export default function App() {
           >
             <option value="full">100% full</option>
             <option value="half">50% (half)</option>
+            <option value="quarter">25% (quarter)</option>
             <option value="eighth">12.5% (eighth)</option>
-            <option value="lowest">Lowest (~6.25%)</option>
+            <option value="sixteenth">1.5625% (sixteenth)</option>
           </select>
           <p className="hint">
             Applies to both standard and realtime. Clone reuse uses the upscale target saved when the

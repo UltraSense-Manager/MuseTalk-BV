@@ -29,13 +29,15 @@ def parse_resolution_scale(name: str) -> float:
         return 1.0
     if key in ("half", "50", "0.5"):
         return 0.5
+    if key in ("quarter", "25", "0.25"):
+        return 0.25
     if key in ("eighth", "12.5", "0.125"):
         return 0.125
-    if key in ("lowest", "16th", "0.0625"):
+    if key in ("sixteenth", "1.5625", "0.0625"):
         return 0.0625
     raise ValueError(
         f"invalid resolution_scale {name!r}; "
-        "use one of: full, half, eighth, lowest (aliases: 100, 50, 12.5)"
+        "use one of: full, half, quarter, eighth, lowest (aliases: 100, 50, 25, 12.5, 1.5625)"
     )
 
 
