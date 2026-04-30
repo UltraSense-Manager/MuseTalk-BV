@@ -32,6 +32,7 @@ def safe_rmtree(path: str) -> None:
 
 # Assumed PCM format for incoming base64 audio (PCM16 mono @ 16kHz by default)
 PCM_SAMPLE_RATE = int(os.getenv("PCM_SAMPLE_RATE", "16000"))
+PCM_SAMPLE_OUTPUT_RATE = int(os.getenv("PCM_SAMPLE_OUTPUT_RATE", "16000"))
 PCM_CHANNELS = int(os.getenv("PCM_CHANNELS", "1"))
 PCM_SAMPLE_WIDTH = int(os.getenv("PCM_SAMPLE_WIDTH", "2"))  # bytes per sample
 MAX_DURATION_SEC = float(os.getenv("MAX_AUDIO_SECONDS", "20"))

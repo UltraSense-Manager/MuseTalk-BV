@@ -6,7 +6,7 @@
 # Requires checkpoints_v2/converter/config.json and checkpoint.pth in build context
 # (or mount a volume over /app/checkpoints_v2 at runtime).
 
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 # Avoid torchaudio FFmpeg load error when system FFmpeg is missing or wrong version
 ENV TORIO_USE_FFMPEG=0
@@ -14,10 +14,12 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# System deps for audio (optional; remove if not needed)
+# System deps for audio and for building Python C extensions (e.g. dtw-python)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     ffmpeg \
+    gcc \
+    libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # App and OpenVoice deps

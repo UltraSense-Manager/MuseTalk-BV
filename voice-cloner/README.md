@@ -22,14 +22,19 @@ FastAPI backend for cloning voices using OpenVoice, secured with JWT bearer auth
       - `GET /state`
       - `POST /train`
       - `POST /clone`
+      - `POST /clone-sub` (no auth)
       - `WS /train`
       - `WS /clone`
+      - `WS /clone-sub` (no auth)
     - Maintains an **in-memory per-user session store** keyed by `sub`, with:
       - `trained_voice_id`
       - `reference_b64` – aggregated base64 PCM reference audio (up to 20s)
       - `reference_path` – temp `.wav` file for the reference audio
       - `reference_target_se` – precomputed target speaker embedding from OpenVoice
       - `reference_audio_name` – audio name used when generating cloned audio
+    - Maintains **sub_voice_links**: a map `sub` → `{ trained_voice_id, reference_target_se, reference_audio_name, expires_at }` used by `/clone-sub`. The link is created on the **first** `GET /state` call for a user who has a trained voice; it expires **1 hour** after that first `/state`. Subsequent `/state` calls do not extend the expiry.
+    - **Embedding persistence** (optional): When `AWS_REGION` and `EMBEDDINGS_TABLE_NAME` are set, at the end of training (REST or WebSocket `operation: "end"`) the speaker embedding is stored in DynamoDB (keyed by `user_id` = `sub`), with `embedding_b64`/`embedding_shape` and optionally `reference_audio_s3_key`. For cloning and for authenticated `/state`, if the in-memory session has no embedding, the server loads it from DynamoDB into the session before proceeding.
+    - **Reference audio in S3** (optional): When `S3_BUCKET` is set, at the end of training the reference speaker WAV is uploaded to S3 and its key is stored in DynamoDB and session. On clone (REST, WebSocket, or `/clone-sub`), the server downloads that reference to a temp file and passes it as `reference_speaker` to the cloner (reference speaker cannot be empty). If S3 is not configured or the reference key is missing, clone returns 422.
   - `auth.py`
     - `verify_jwt_and_load_user(token)`:
       - Decodes JWT using `JWT_SECRET` and `JWT_ALGORITHM`.
@@ -43,7 +48,7 @@ FastAPI backend for cloning voices using OpenVoice, secured with JWT bearer auth
   - `models.py`
     - Pydantic models for requests/responses:
       - `TrainRequest`, `TrainResponse`
-      - `CloneRequest`, `CloneResponse`
+      - `CloneRequest`, `CloneResponse`, `CloneSubRequest`
       - `StateResponse`, `HealthResponse`
       - `AuthedUser`
   - `audio.py`
@@ -69,11 +74,17 @@ Set the following environment variables for both local and production:
   - `JWT_SECRET` – symmetric key for verifying JWT signatures.
   - `JWT_ALGORITHM` – algorithm (default `HS256`).
 - **DynamoDB**
-  - `DDB_TABLE_NAME` – table with:
-    - Partition key `sub` (string).
+  - `DDB_TABLE_NAME` – table for user verification (auth):
+    - Partition key `user_id` (string; stores the JWT `sub`).
     - Attribute `email` (string).
-  - `AWS_REGION` – AWS region of the table (e.g. `us-east-1`).
+  - `AWS_REGION` – AWS region for DynamoDB tables (e.g. `us-east-1`).
+  - `EMBEDDINGS_TABLE_NAME` – (optional) table for storing speaker embeddings; default `brivva-users-embeddings`. When set (with `AWS_REGION`), embeddings are persisted at end of training and loaded when cloning or when fetching state if the in-memory session has no embedding. Schema:
+    - Partition key `user_id` (string; same as user `sub`).
+    - Attributes: `trained_voice_id` (string), `embedding_b64` (string), `embedding_shape` (list of ints), `reference_audio_s3_key` (string; S3 key of the reference WAV when S3 is configured).
   - Standard AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, etc.) must be available to the process.
+- **S3**
+  - `S3_BUCKET` – bucket where reference speaker WAVs are stored. When set (with `AWS_REGION`), at the end of training the reference audio is uploaded to `s3://{S3_BUCKET}/{S3_REF_PREFIX}/{sub}/{trained_voice_id}.wav` and the key is stored in the embeddings table and session. On clone, the server downloads the reference to a temp file and passes it to the cloner (reference speaker cannot be empty).
+  - `S3_REF_PREFIX` – optional key prefix for reference audio (default `voice-refs`).
 - **Server**
   - `PORT` – optional, port FastAPI/uvicorn will bind to (defaults to `8000`).
   - `LOG_LEVEL` – optional, logging level: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default `INFO`).
@@ -117,12 +128,19 @@ export AWS_ACCESS_KEY_ID="..."
 export AWS_SECRET_ACCESS_KEY="..."
 ```
 
-Ensure your DynamoDB table exists and has at least:
+Ensure your DynamoDB table for auth exists and has at least:
 
-- Partition key `sub` (string).
+- Partition key `user_id` (string; holds the JWT `sub`).
 - Attribute `email` (string).
 
-### 3. Run the app locally
+Optional: create the embeddings table (e.g. `brivva-users-embeddings`) with partition key `user_id` (string) so the server can persist and load speaker embeddings across restarts.
+
+### 3. Download the latest checkpoint for inferencing
+
+From OpenVoice: [https://github.com/myshell-ai/OpenVoice/blob/main/docs/USAGE.md](https://github.com/myshell-ai/OpenVoice/blob/main/docs/USAGE.md)  
+Download the OpenVoice V2 checkpoint and save it as checkpoints_v2
+
+### 4. Run the app locally
 
 Start with uvicorn:
 
@@ -169,6 +187,7 @@ At deployment time, set environment variables:
 
 - `JWT_SECRET`, `JWT_ALGORITHM`
 - `DDB_TABLE_NAME`, `AWS_REGION`
+- `EMBEDDINGS_TABLE_NAME` (optional; default `brivva-users-embeddings`) if you want embedding persistence.
 - AWS credentials via:
   - IAM Role for the task/pod/instance (preferred), or
   - Environment variables or secrets manager.
@@ -178,6 +197,7 @@ At deployment time, set environment variables:
 - This implementation uses **in-memory sessions**, keyed by `sub`. In a multi-instance or auto-scaled environment:
   - All requests for a user must be routed to the same instance (sticky sessions), **or**
   - Replace the in-memory `sessions` dict with a shared store (e.g. Redis or DynamoDB).
+- When **embedding persistence** is enabled (`EMBEDDINGS_TABLE_NAME` and `AWS_REGION` set), speaker embeddings are stored in DynamoDB at the end of training and loaded from DynamoDB when cloning or when fetching state if the current process has no embedding in session. That allows clone and state to work even when the user hits a different instance or after a restart, without requiring a shared session store.
 
 ### 4. Reverse proxy
 
@@ -232,6 +252,8 @@ The JWT must:
 }
 ```
 
+On the **first** `/state` call where the user has a trained voice, the server registers that `sub` for **clone-by-sub** usage: the link expires **1 hour** after this first `/state`. Later `/state` calls do not extend the expiry. If the session has no embedding in memory, the server attempts to load it from the embeddings DynamoDB table (when configured) so the link can be created.
+
 Example:
 
 ```bash
@@ -240,7 +262,7 @@ curl -H "Authorization: Bearer $JWT" http://localhost:8000/state
 
 ### 3. Train (register reference voice)
 
-Training uses a three-phase flow: **start** → **reference** chunks → **end**. Send `{"operation": "start"}` to begin, one or more `{"reference": "<base64-pcm>"}` to append audio (up to 20s), then `{"operation": "end"}` to run training and persist the voice.
+Training uses a three-phase flow: **start** → **reference** chunks → **end**. Send `{"operation": "start"}` to begin, one or more `{"reference": "<base64-pcm>"}` to append audio (up to 20s), then `{"operation": "end"}` to run training and persist the voice. When embedding persistence is configured, the speaker embedding is also stored in the `brivva-users-embeddings` DynamoDB table at **end** (for both REST and WebSocket).
 
 #### REST
 
@@ -289,7 +311,7 @@ Cloning requires an existing reference voice registered via `/train`.
 - **Behavior**:
   - Accepts **base64-encoded PCM16** chunks in the `base` field.
   - Each request is treated independently (no accumulation); audio longer than `MAX_AUDIO_SECONDS` is truncated.
-  - Uses the precomputed reference speaker embedding from training.
+  - Uses the precomputed reference speaker embedding from the session; if the session has no embedding (e.g. new process or different instance), the server loads it from the embeddings DynamoDB table when configured.
 - **Request Body**:
 
 ```json
@@ -360,6 +382,73 @@ curl -X POST http://localhost:8000/clone \
   - No trained voice: `{"error": "No trained voice registered for this session", "code": 422}`
   - Invalid JSON: `{"error": "Invalid JSON", "code": 400}`
   - Cloning failure: `{"error": "Failed to generate cloned voice: ...", "code": 500}`
+
+### 5. Clone by sub (`/clone-sub`)
+
+Clone using a **sub** to resolve the voice instead of the authenticated user. The sub must have been registered by a **first** `GET /state` call (see §2); the link expires **1 hour** after that first `/state`. No JWT is required.
+
+**Typical flow**: User A trains a voice and calls `GET /state` → their `sub` is registered for 1 hour. Anyone (e.g. a different client or user) can call `POST /clone-sub` or `WS /clone-sub` with User A’s `sub` and the base audio until the link expires.
+
+#### REST
+
+- **Endpoint**: `POST /clone-sub`
+- **Auth**: none
+- **Request body**:
+
+```json
+{
+  "sub": "user-sub-from-state",
+  "base": "<base64-encoded-pcm-audio>"
+}
+```
+
+- **Success response**: same as `POST /clone`:
+
+```json
+{
+  "session_id": "user-sub-from-state",
+  "trained_voice_id": "abc123",
+  "output_path": "<base64-encoded-pcm-of-cloned-voice>"
+}
+```
+
+- **Errors**:
+  - `422` – no voice link for this sub or link expired: `{"detail": "No voice link for this sub or link expired"}` or `{"detail": "Voice link expired"}`
+  - `500` – cloning failed (same as `/clone`)
+
+Example:
+
+```bash
+curl -X POST http://localhost:8000/clone-sub \
+  -H "Content-Type: application/json" \
+  -d '{"sub": "user-sub-from-state", "base": "'"$BASE_B64"'"}'
+```
+
+#### WebSocket
+
+- **Endpoint**: `WS /clone-sub`
+- **Auth**: none
+- **Client → Server message**:
+
+```json
+{
+  "sub": "user-sub-from-state",
+  "base": "<base64-encoded-pcm-audio>"
+}
+```
+
+- **Server → Client success**: same shape as `WS /clone`:
+
+```json
+{
+  "type": "clone_result",
+  "session_id": "user-sub-from-state",
+  "trained_voice_id": "abc123",
+  "output_path": "<base64-encoded-pcm-of-cloned-voice>"
+}
+```
+
+- **Error responses**: `{"error": "<message>", "code": 422|400|500}` (e.g. missing sub/base, invalid JSON, no link or expired, cloning failure).
 
 ---
 

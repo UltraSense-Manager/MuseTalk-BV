@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  downloadJob,
-  pollUntilDone,
-  submitRealtimeJob,
-  submitStandardJob,
-} from "./api";
+import { downloadJob, pollUntilDone, submitStandardJob } from "./api";
 import {
   formatTtsDuration,
   getDecodedAudioDurationSeconds,
@@ -14,15 +9,16 @@ import {
   validateTtsText,
   waitAudioElementDuration,
 } from "./tts";
+import {
+  audioToMonoPcm16Base64,
+  cloneVoiceRest,
+  pcm16Base64ToWavBlob,
+  trainVoiceRest,
+} from "./voiceCloner";
 import "./App.css";
 
 const POLL_INTERVAL_MS = 2000;
 const JOB_DEADLINE_MS = 3600 * 1000;
-
-function videoFileKey(f: File | null): string | null {
-  if (!f) return null;
-  return `${f.name}:${f.size}:${f.lastModified}`;
-}
 
 export default function App() {
   const [baseUrl, setBaseUrl] = useState("");
@@ -31,10 +27,12 @@ export default function App() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
 
-  const [realtime, setRealtime] = useState(true);
-  const [prepFrames, setPrepFrames] = useState(30);
-  /** full | half | eighth | lowest — server downscales processing then upscales for download */
   const [resolutionScale, setResolutionScale] = useState("full");
+
+  const [useVoiceClone, setUseVoiceClone] = useState(false);
+  const [voiceRefFile, setVoiceRefFile] = useState<File | null>(null);
+  const [trainedVoiceId, setTrainedVoiceId] = useState("");
+  const [voiceBusy, setVoiceBusy] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [previewBusy, setPreviewBusy] = useState(false);
@@ -45,8 +43,10 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
 
-  const lastCloneIdRef = useRef<string | null>(null);
-  const lastRealtimeVideoKeyRef = useRef<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<Blob[]>([]);
+  const [recording, setRecording] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const runStartRef = useRef<number>(0);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -92,13 +92,6 @@ export default function App() {
   const displayElapsed =
     busy && runStartRef.current ? liveElapsedMs / 1000 : elapsedMs !== null ? elapsedMs / 1000 : null;
 
-  const currentVideoKey = videoFileKey(videoFile);
-  const willReuseClone =
-    realtime &&
-    !!lastCloneIdRef.current &&
-    !!currentVideoKey &&
-    lastRealtimeVideoKeyRef.current === currentVideoKey;
-
   const validate = useCallback((): string | null => {
     const base = baseUrl.trim();
     if (!base) return "Enter the API base URL (e.g. http://127.0.0.1:7860).";
@@ -111,15 +104,13 @@ export default function App() {
     const ttsErr = validateTtsText(ttsText);
     if (ttsErr) return ttsErr;
     if (!puterAvailable()) return "Puter.js is still loading or blocked. Refresh the page.";
-    if (!realtime) {
-      if (!videoFile) return "Choose a reference video for standard mode.";
-      return null;
-    }
-    if (!willReuseClone && !videoFile) {
-      return "Choose a reference video (or reuse the same file as the last successful realtime run).";
+    if (!videoFile) return "Choose a reference video.";
+    if (useVoiceClone) {
+      if (!bearerToken.trim()) return "Voice clone requires a bearer token (same JWT as the API).";
+      if (!trainedVoiceId.trim()) return "Register a reference voice first (train), or turn off voice clone.";
     }
     return null;
-  }, [baseUrl, ttsText, videoFile, realtime, willReuseClone]);
+  }, [baseUrl, ttsText, videoFile, useVoiceClone, bearerToken, trainedVoiceId]);
 
   const stopPreview = useCallback(() => {
     const a = previewAudioRef.current;
@@ -178,6 +169,69 @@ export default function App() {
     }
   };
 
+  const normalizedBase = () =>
+    baseUrl.trim().startsWith("http") ? baseUrl.trim() : `http://${baseUrl.trim()}`;
+
+  const onRegisterVoice = async () => {
+    setError(null);
+    setInfo(null);
+    const base = normalizedBase();
+    if (!bearerToken.trim()) {
+      setError("Bearer token required to train voice.");
+      return;
+    }
+    let blob: Blob | null = null;
+    if (voiceRefFile) {
+      blob = voiceRefFile;
+    } else {
+      setError("Choose a reference audio file (WAV/MP3) or record, then train.");
+      return;
+    }
+    setVoiceBusy(true);
+    try {
+      setInfo("Encoding reference audio…");
+      const pcmB64 = await audioToMonoPcm16Base64(blob);
+      setInfo("Training voice on server…");
+      const vid = await trainVoiceRest(base, bearerToken, pcmB64, abortRef.current?.signal);
+      setTrainedVoiceId(vid);
+      setInfo(`Voice registered. trained_voice_id=${vid}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      setInfo(null);
+    } finally {
+      setVoiceBusy(false);
+    }
+  };
+
+  const startRecordRef = () => {
+    setError(null);
+    void navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        recordChunksRef.current = [];
+        const mr = new MediaRecorder(stream);
+        mediaRecorderRef.current = mr;
+        mr.ondataavailable = (ev) => {
+          if (ev.data.size) recordChunksRef.current.push(ev.data);
+        };
+        mr.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop());
+          const blob = new Blob(recordChunksRef.current, { type: mr.mimeType || "audio/webm" });
+          setVoiceRefFile(new File([blob], "reference-recording.webm", { type: blob.type }));
+          mediaRecorderRef.current = null;
+          setRecording(false);
+        };
+        mr.start();
+        setRecording(true);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  };
+
+  const stopRecordRef = () => {
+    mediaRecorderRef.current?.stop();
+  };
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -188,9 +242,7 @@ export default function App() {
       return;
     }
 
-    const base = baseUrl.trim().startsWith("http")
-      ? baseUrl.trim()
-      : `http://${baseUrl.trim()}`;
+    const base = normalizedBase();
 
     abortRef.current?.abort();
     const ac = new AbortController();
@@ -205,14 +257,22 @@ export default function App() {
 
     try {
       setInfo("Synthesizing speech (Puter.js)…");
-      const audioFile = await textToSpeechFile(ttsText);
+      let audioFile = await textToSpeechFile(ttsText);
       try {
         const dur = await getDecodedAudioDurationSeconds(audioFile);
         setTtsDurationLine(`TTS duration: ${formatTtsDuration(dur)} (this run)`);
-        setInfo(`Driving audio ${formatTtsDuration(dur)} — submitting job…`);
+        setInfo(`Driving audio ${formatTtsDuration(dur)} — preparing job…`);
       } catch {
         setTtsDurationLine(null);
-        setInfo("Submitting job…");
+        setInfo("Preparing job…");
+      }
+
+      if (useVoiceClone) {
+        setInfo("Cloning driving audio to target voice…");
+        const ttsPcm = await audioToMonoPcm16Base64(audioFile);
+        const outB64 = await cloneVoiceRest(base, bearerToken, ttsPcm, ac.signal);
+        const wavBlob = pcm16Base64ToWavBlob(outB64);
+        audioFile = new File([wavBlob], "driving-cloned.wav", { type: "audio/wav" });
       }
 
       const commonForm: Record<string, string> = {
@@ -225,81 +285,25 @@ export default function App() {
       };
 
       setInfo("Submitting job…");
-
-      if (!realtime) {
-        if (!videoFile) throw new Error("Missing video.");
-        const submit = await submitStandardJob(
-          base,
-          bearerToken,
-          audioFile,
-          videoFile,
-          commonForm,
-          ac.signal
-        );
-        setInfo(`Queued job ${submit.job_id}. Waiting…`);
-        await pollUntilDone(base, bearerToken, submit.job_id, {
-          intervalMs: POLL_INTERVAL_MS,
-          deadlineMs: JOB_DEADLINE_MS,
-          signal: ac.signal,
-          onTick: (b) => setInfo(`Status: ${b.status}…`),
-        });
-        setInfo("Downloading result…");
-        const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
-        lastCloneIdRef.current = null;
-        lastRealtimeVideoKeyRef.current = null;
-        triggerBlobDownload(blob, "lipsync-output.mp4");
-      } else {
-        const prep = Math.min(200, Math.max(15, prepFrames));
-        const rtForm: Record<string, string> = {
-          ...commonForm,
-          realtime_prep_frames: String(prep),
-          realtime_batch_size: "20",
-          realtime_fps: "25",
-        };
-        const reuseId = willReuseClone ? lastCloneIdRef.current! : "";
-        if (reuseId) {
-          rtForm.use_clone = "true";
-          rtForm.clone_id = reuseId;
-        } else {
-          rtForm.use_clone = "false";
-        }
-
-        const videoForUpload = reuseId ? null : videoFile;
-
-        const submit = await submitRealtimeJob(
-          base,
-          bearerToken,
-          audioFile,
-          rtForm,
-          videoForUpload,
-          ac.signal
-        );
-
-        const cid = submit.clone_id || submit.user_id;
-        if (cid) setInfo(`Queued ${submit.job_id} (clone_id=${cid}). Waiting…`);
-        else setInfo(`Queued ${submit.job_id}. Waiting…`);
-
-        const doneBody = await pollUntilDone(base, bearerToken, submit.job_id, {
-          intervalMs: POLL_INTERVAL_MS,
-          deadlineMs: JOB_DEADLINE_MS,
-          signal: ac.signal,
-          onTick: (b) => {
-            const av = b.clone_id || b.user_id;
-            const avs = av ? ` clone_id=${av}` : "";
-            setInfo(`Status: ${b.status}${avs}…`);
-          },
-        });
-
-        const finalClone = doneBody.clone_id || doneBody.user_id || submit.clone_id || submit.user_id;
-        setInfo("Downloading result…");
-        const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
-
-        if (finalClone) lastCloneIdRef.current = finalClone;
-        if (!reuseId && videoFile) {
-          lastRealtimeVideoKeyRef.current = videoFileKey(videoFile);
-        }
-        triggerBlobDownload(blob, "lipsync-realtime-output.mp4");
-      }
+      if (!videoFile) throw new Error("Missing video.");
+      const submit = await submitStandardJob(
+        base,
+        bearerToken,
+        audioFile,
+        videoFile,
+        commonForm,
+        ac.signal
+      );
+      setInfo(`Queued job ${submit.job_id}. Waiting…`);
+      await pollUntilDone(base, bearerToken, submit.job_id, {
+        intervalMs: POLL_INTERVAL_MS,
+        deadlineMs: JOB_DEADLINE_MS,
+        signal: ac.signal,
+        onTick: (b) => setInfo(`Status: ${b.status}…`),
+      });
+      setInfo("Downloading result…");
+      const blob = await downloadJob(base, bearerToken, submit.job_id, ac.signal);
+      triggerBlobDownload(blob, "lipsync-output.mp4");
 
       const elapsed = performance.now() - runStartRef.current;
       setElapsedMs(elapsed);
@@ -324,7 +328,7 @@ export default function App() {
       <h1>Lipsync demo</h1>
       <p className="hint">
         Driving audio comes from Puter.js TTS. Configure your MuseTalk API URL and bearer token
-        (same as <code>test.py</code>).
+        (same as <code>test.py</code>). Standard jobs use <code>POST /api/job</code> only.
       </p>
 
       <form className="stack" onSubmit={onSubmit}>
@@ -401,13 +405,15 @@ export default function App() {
 
         <div className="row">
           <input
-            id="rt"
+            id="rtdep"
             type="checkbox"
-            checked={realtime}
-            onChange={(e) => setRealtime(e.target.checked)}
-            disabled={busy}
+            checked={false}
+            disabled
+            readOnly
           />
-          <label htmlFor="rt">Realtime mode (POST /api/realtime/job)</label>
+          <label htmlFor="rtdep" className="dimmed">
+            Realtime mode (deprecated — use <code>POST /api/job</code> only)
+          </label>
         </div>
 
         <div className="field">
@@ -424,38 +430,69 @@ export default function App() {
             <option value="eighth">12.5% (eighth)</option>
             <option value="sixteenth">1.5625% (sixteenth)</option>
           </select>
-          <p className="hint">
-            Applies to both standard and realtime. Clone reuse uses the upscale target saved when the
-            avatar was first prepared.
-          </p>
+          <p className="hint">Applies to standard <code>/api/job</code> (server upscales to full video size).</p>
         </div>
 
-        <div className={`field ${realtime ? "" : "dimmed"}`}>
-          <label htmlFor="prep">Realtime prep frames (first N frames)</label>
-          <div className="slider-row">
+        <div className="field">
+          <div className="row">
             <input
-              id="prep"
-              type="range"
-              min={15}
-              max={200}
-              value={prepFrames}
-              onChange={(e) => setPrepFrames(Number(e.target.value))}
-              disabled={busy || !realtime}
+              id="vc"
+              type="checkbox"
+              checked={useVoiceClone}
+              onChange={(e) => setUseVoiceClone(e.target.checked)}
+              disabled={busy}
             />
-            <span className="value">{prepFrames}</span>
+            <label htmlFor="vc">Use voice clone (OpenVoice on MuseTalk at /api/voice)</label>
           </div>
           <p className="hint">
-            Backend clamps to 1–300. With realtime on, the same video file as your last successful
-            run sends <code>clone_id</code> + <code>use_clone=true</code> and skips re-uploading video.
+            Requires server <code>ENABLE_VOICE_CLONER=on</code> and <code>JWT_SECRET</code>. Train once
+            per voice, then each run clones Puter TTS to that voice before lipsync.
           </p>
+          {useVoiceClone ? (
+            <div className="stack" style={{ marginTop: 8 }}>
+              <label htmlFor="vref">Reference voice (audio file)</label>
+              <input
+                id="vref"
+                type="file"
+                accept="audio/*"
+                disabled={busy || voiceBusy}
+                onChange={(e) => setVoiceRefFile(e.target.files?.[0] ?? null)}
+              />
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={recording ? stopRecordRef : startRecordRef}
+                  disabled={busy || voiceBusy}
+                >
+                  {recording ? "Stop recording" : "Record reference"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void onRegisterVoice()}
+                  disabled={busy || voiceBusy}
+                >
+                  {voiceBusy ? "Training…" : "Register voice (train)"}
+                </button>
+              </div>
+              {trainedVoiceId ? (
+                <p className="hint">
+                  <code>trained_voice_id</code>: {trainedVoiceId}{" "}
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => void navigator.clipboard.writeText(trainedVoiceId)}
+                  >
+                    Copy
+                  </button>
+                </p>
+              ) : (
+                <p className="hint">After train, the voice id appears here for your records.</p>
+              )}
+            </div>
+          ) : null}
         </div>
-
-        {realtime && willReuseClone ? (
-          <p className="msg info">
-            Same video as last successful realtime job — request will reuse{" "}
-            <code>clone_id</code> and omit the video part.
-          </p>
-        ) : null}
 
         <div className="row">
           <button className="btn" type="submit" disabled={busy}>

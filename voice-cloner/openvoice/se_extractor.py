@@ -1,3 +1,4 @@
+import logging
 import os
 import glob
 import torch
@@ -13,13 +14,58 @@ import base64
 import librosa
 from whisper_timestamped.transcribe import get_audio_tensor, get_vad_segments
 
+logger = logging.getLogger(__name__)
+
 model_size = "medium"
-# Run on GPU with FP16
+# Run on GPU with FP16 when CTranslate2 is built with CUDA; else CPU (see WHISPER_DEVICE).
 model = None
+
+
+def _ensure_whisper_model() -> None:
+    """Load faster-whisper once; fall back to CPU if CTranslate2 has no CUDA build."""
+    global model
+    if model is not None:
+        return
+
+    override = os.getenv("WHISPER_DEVICE", "").strip().lower()
+    if override == "cpu":
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        logger.info("WhisperModel: WHISPER_DEVICE=cpu")
+        return
+    if override == "cuda":
+        try:
+            model = WhisperModel(model_size, device="cuda", compute_type="float16")
+            logger.info("WhisperModel: WHISPER_DEVICE=cuda")
+            return
+        except ValueError as e:
+            if "cuda" not in str(e).lower():
+                raise
+            logger.warning(
+                "WhisperModel: WHISPER_DEVICE=cuda failed (%s); using CPU", e
+            )
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            return
+
+    if torch.cuda.is_available():
+        try:
+            model = WhisperModel(model_size, device="cuda", compute_type="float16")
+            logger.info("WhisperModel: cuda float16")
+            return
+        except ValueError as e:
+            if "cuda" not in str(e).lower():
+                raise
+            logger.warning(
+                "WhisperModel: CUDA requested but CTranslate2 has no CUDA support (%s); using CPU",
+                e,
+            )
+
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    logger.info("WhisperModel: cpu int8")
+
+
 def split_audio_whisper(audio_path, audio_name, target_dir='processed'):
     global model
-    if model is None:
-        model = WhisperModel(model_size, device="cuda", compute_type="float16")
+    _ensure_whisper_model()
     audio = AudioSegment.from_file(audio_path)
     max_len = len(audio)
 
@@ -100,7 +146,7 @@ def split_audio_vad(audio_path, audio_name, target_dir, split_seconds=10.0):
     os.makedirs(wavs_folder, exist_ok=True)
     start_time = 0.
     count = 0
-    num_splits = int(np.round(audio_dur / split_seconds))
+    num_splits = int(np.ceil(audio_dur / split_seconds))
     assert num_splits > 0, 'input audio is too short'
     interval = audio_dur / num_splits
 

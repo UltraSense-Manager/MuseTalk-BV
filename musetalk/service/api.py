@@ -15,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
+from musetalk.service.voice_cloner_mount import mount_voice_cloner_if_enabled
 from musetalk.service.ffmpeg_pipe import has_nvenc_encoder, has_working_nvenc
 from musetalk.service.mux_demux import demux_muxed_mp4
 from musetalk.service.resolution_scale import parse_resolution_scale
@@ -127,10 +128,13 @@ def create_service_app(
         return _resolve_user_id(cfg, creds)
 
     app = FastAPI(title="MuseTalk Service", version="1.0")
+    app.state.voice_cloner_mounted = mount_voice_cloner_if_enabled(
+        app, enabled=bool(cfg.enable_voice_cloner)
+    )
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "status": "ok",
             "cpu_workers": cfg.cpu_workers,
             "parallel_blend": cfg.enable_parallel_blend,
@@ -147,7 +151,20 @@ def create_service_app(
             "standard_batch_size": cfg.standard_batch_size,
             "realtime_batch_size_default": cfg.realtime_batch_size_default,
             "landmark_batch_size": cfg.landmark_batch_size,
+            "voice_cloner": bool(getattr(app.state, "voice_cloner_mounted", False)),
+            "voice_cloner_prefix": "/api/voice" if getattr(app.state, "voice_cloner_mounted", False) else None,
         }
+        if getattr(app.state, "voice_cloner_mounted", False):
+            ddb_user = bool(
+                os.environ.get("DDB_TABLE_NAME", "").strip()
+                and os.environ.get("AWS_REGION", "").strip()
+            )
+            out["voice_cloner_auth"] = "ddb" if ddb_user else "jwt"
+            region = os.environ.get("AWS_REGION", "").strip()
+            emb = bool(region and os.environ.get("EMBEDDINGS_TABLE_NAME", "").strip())
+            s3 = bool(region and os.environ.get("S3_BUCKET", "").strip())
+            out["voice_cloner_backend"] = "aws" if emb and s3 else "local"
+        return out
 
     @app.post("/job", dependencies=[Depends(bearer_dep)])
     async def contract_post_job(

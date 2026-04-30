@@ -1,8 +1,7 @@
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-import boto3
 import jwt
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, HTTPException, WebSocket, status
@@ -18,32 +17,39 @@ logger = logging.getLogger(__name__)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-DDB_TABLE_NAME = os.getenv("DDB_TABLE_NAME", "")
-AWS_REGION = os.getenv("AWS_REGION")
+DDB_TABLE_NAME = os.getenv("DDB_TABLE_NAME", "").strip()
+AWS_REGION = os.getenv("AWS_REGION", "").strip()
 
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET environment variable must be set")
 
-if not DDB_TABLE_NAME:
-    raise RuntimeError("DDB_TABLE_NAME environment variable must be set")
+# DynamoDB user verification is optional: when table/region are not set, trust JWT claims only.
+USE_DDB_USER_TABLE = bool(DDB_TABLE_NAME and AWS_REGION)
+user_table = None
+if USE_DDB_USER_TABLE:
+    import boto3
 
-if not AWS_REGION:
-    raise RuntimeError("AWS_REGION environment variable must be set")
-
-
-ddb = boto3.resource("dynamodb", region_name=AWS_REGION)
-user_table = ddb.Table(DDB_TABLE_NAME)
+    try:
+        ddb = boto3.resource("dynamodb", region_name=AWS_REGION)
+        user_table = ddb.Table(DDB_TABLE_NAME)
+        logger.info("Voice cloner auth: DynamoDB user table enabled table=%s", DDB_TABLE_NAME)
+    except (BotoCoreError, ClientError, Exception) as e:  # noqa: BLE001
+        logger.warning("Voice cloner auth: DynamoDB init failed (%s); falling back to JWT-only", e)
+        user_table = None
+        USE_DDB_USER_TABLE = False
+else:
+    logger.info("Voice cloner auth: JWT-only (DDB_TABLE_NAME / AWS_REGION not set)")
 
 security = HTTPBearer(auto_error=True)
+security_optional = HTTPBearer(auto_error=False)
 
 
 def verify_jwt_and_load_user(token: str) -> AuthedUser:
     """
-    Decode a JWT, verify expiry and match against DynamoDB.
+    Decode JWT and verify user.
 
-    Assumptions:
-    - JWT contains at least `sub` and `email` claims.
-    - DynamoDB table has partition key `sub` and attribute `email`.
+    With DynamoDB: require sub + email in token and match DynamoDB row (user_id partition key).
+    Without DynamoDB: require sub in token; email from token or placeholder (no DB lookup).
     """
     logger.debug("verify_jwt_and_load_user: decoding token")
     try:
@@ -69,11 +75,24 @@ def verify_jwt_and_load_user(token: str) -> AuthedUser:
     sub = payload.get("sub")
     email = payload.get("email")
 
-    if not sub or not email:
-        logger.warning("verify_jwt_and_load_user: missing sub or email")
+    if not sub:
+        logger.warning("verify_jwt_and_load_user: missing sub")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing required claims",
+            detail="Token missing required claim: sub",
+        )
+
+    if not USE_DDB_USER_TABLE or user_table is None:
+        if not email:
+            email = f"{sub}@jwt-local"
+        logger.debug("verify_jwt_and_load_user: jwt-only ok sub=%s", sub)
+        return AuthedUser(sub=str(sub), email=str(email), raw_claims=payload)
+
+    if not email:
+        logger.warning("verify_jwt_and_load_user: missing email for DynamoDB mode")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing required claim: email",
         )
 
     logger.debug("verify_jwt_and_load_user: lookup DynamoDB sub=%s", sub)
@@ -106,6 +125,18 @@ async def get_current_user(
     return verify_jwt_and_load_user(token)
 
 
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
+) -> Optional[AuthedUser]:
+    """Returns AuthedUser if valid Bearer token present, else None."""
+    if not credentials:
+        return None
+    try:
+        return verify_jwt_and_load_user(credentials.credentials)
+    except HTTPException:
+        return None
+
+
 def extract_token_from_websocket(websocket: WebSocket) -> str:
     """
     Extract Bearer token from WebSocket `Authorization` header or `token` query param.
@@ -126,4 +157,3 @@ def extract_token_from_websocket(websocket: WebSocket) -> str:
         status_code=status.WS_1008_POLICY_VIOLATION,
         detail="Missing Bearer token",
     )
-

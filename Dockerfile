@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y -q --no-install-recommends \
         git \
         libssl-dev \
         wget \
+	unzip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get -y update
@@ -114,13 +115,11 @@ RUN mim install "mmpose==1.1.0" --no-build-isolation
 
 RUN which ffmpeg
 RUN sh download_weights.sh
+RUN python3 voice-cloner/decompressor.py voice-cloner/master.json -o voice-cloner/checkpoints.zip && unzip -o -q voice-cloner/checkpoints.zip -d voice-cloner 
+
 # Switch to the non-privileged user to run the application.
 USER appuser
-
-RUN ls 
-#Test run
-#RUN sh inference.sh v1.5 normal
-RUN python3 voice-cloner/decompressor.py voice-cloner/master.json -o voice-cloner/checkpoints.zip && unzip voice-cloner/checkpoints.zip -d voice-cloner  
+ 
 
 # Expose the port that the application listens on.
 EXPOSE 7860

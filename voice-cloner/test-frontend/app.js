@@ -5,9 +5,9 @@
   const PCM_CHANNELS = 1;
   const PCM_SAMPLE_WIDTH = 2; // 16-bit
   const MAX_DURATION_SEC = 20;
-  const TRAIN_CHUNK_MS = 10000;
+  const TRAIN_CHUNK_MS = 5285;
   // Clone API returns raw PCM at this rate (OpenVoice default)
-  const CLONE_OUTPUT_SAMPLE_RATE = 22000;
+  const CLONE_OUTPUT_SAMPLE_RATE = 16000;
 
   function getApiBase() {
     return (document.getElementById('apiBase').value || '').replace(/\/$/, '');

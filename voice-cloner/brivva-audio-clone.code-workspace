@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "brivva-audio-clone",
+			"path": "."
+		},
+		{
+			"name": "checkpoints_v2",
+			"path": "../../checkpoints_v2"
+		}
+	],
+	"settings": {}
+}

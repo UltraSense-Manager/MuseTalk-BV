@@ -43,6 +43,7 @@ class ServiceConfig:
     standard_batch_size: int
     realtime_batch_size_default: int
     landmark_batch_size: int
+    enable_voice_cloner: bool
 
 
 def load_service_config() -> ServiceConfig:
@@ -75,6 +76,7 @@ def load_service_config() -> ServiceConfig:
     standard_batch_size = max(1, _env_int("STANDARD_BATCH_SIZE", 8))
     realtime_batch_size_default = max(1, _env_int("REALTIME_BATCH_SIZE_DEFAULT", 20))
     landmark_batch_size = max(1, _env_int("LANDMARK_BATCH_SIZE", 1))
+    enable_voice_cloner = _env_truthy("ENABLE_VOICE_CLONER", default=False)
 
     # Prefer GRADIO_* to avoid accidental use of OS USER; USER/PASS still supported.
     user = (
@@ -111,4 +113,5 @@ def load_service_config() -> ServiceConfig:
         standard_batch_size=standard_batch_size,
         realtime_batch_size_default=realtime_batch_size_default,
         landmark_batch_size=landmark_batch_size,
+        enable_voice_cloner=enable_voice_cloner,
     )

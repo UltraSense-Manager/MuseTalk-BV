@@ -4,7 +4,7 @@ from setuptools import setup, find_packages
 setup(name='MyShell-OpenVoice',
       version='0.0.0',
       description='Instant voice cloning by MyShell.',
-      long_description=open('README.md').read().strip(),
+      long_description="README.md",#open('README.md').read().strip(),
       long_description_content_type='text/markdown',
       keywords=[
             'text-to-speech',

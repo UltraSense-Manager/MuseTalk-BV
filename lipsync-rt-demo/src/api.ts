@@ -61,6 +61,7 @@ export async function submitStandardJob(
   return payload;
 }
 
+/** @deprecated Realtime path is deprecated; the demo uses {@link submitStandardJob} only. */
 export async function submitRealtimeJob(
   base: string,
   token: string,

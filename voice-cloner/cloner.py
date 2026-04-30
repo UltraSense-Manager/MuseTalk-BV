@@ -3,11 +3,13 @@ import logging
 import os
 import wave
 
+import librosa
+import numpy as np
 import torch
 from openvoice import se_extractor
 from openvoice.api import ToneColorConverter
 
-from audio import safe_rmtree
+from audio import safe_rmtree, PCM_SAMPLE_OUTPUT_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,42 @@ tone_color_converter.load_ckpt(f'{ckpt_converter}/checkpoint.pth')
 
 os.makedirs(output_dir, exist_ok=True)
 logger.info("cloner loaded device=%s output_dir=%s", device, output_dir)
+
+
+def _resample_clone_pcm(
+    frames: bytes, orig_sr: int, n_channels: int, sampwidth: int
+) -> bytes:
+    """Resample converter output (e.g. 22050 Hz) to PCM_SAMPLE_RATE (16 kHz)."""
+    if orig_sr == PCM_SAMPLE_OUTPUT_RATE or not frames:
+        return frames
+    if sampwidth != 2:
+        logger.warning(
+            "clone resample: unexpected sampwidth=%s, returning original",
+            sampwidth,
+        )
+        return frames
+
+    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    if n_channels > 1:
+        audio = audio.reshape(-1, n_channels)
+        resampled = np.stack(
+            [
+                librosa.resample(
+                    audio[:, c], orig_sr=orig_sr, target_sr=PCM_SAMPLE_OUTPUT_RATE
+                )
+                for c in range(n_channels)
+            ],
+            axis=1,
+        )
+    else:
+        resampled = librosa.resample(
+            audio, orig_sr=orig_sr, target_sr=PCM_SAMPLE_OUTPUT_RATE
+        )
+
+    out = (np.clip(resampled, -1.0, 1.0) * 32767.0).astype(np.int16)
+    if n_channels > 1:
+        out = out.reshape(-1)
+    return out.tobytes()
 
 
 def extract_speaker_embedding(audio_path):
@@ -63,7 +101,11 @@ def clone(reference_speaker, base_speaker, target_se=None, target_audio_name=Non
     # Read the generated WAV and return base64-encoded PCM data
     try:
         with wave.open(save_path, "rb") as wf:
+            orig_sr = wf.getframerate()
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
             frames = wf.readframes(wf.getnframes())
+        frames = _resample_clone_pcm(frames, orig_sr, n_channels, sampwidth)
         pcm_b64 = base64.b64encode(frames).decode("utf-8")
         logger.debug("clone: read %s bytes PCM from %s", len(frames), save_path)
         logger.info("clone: done")

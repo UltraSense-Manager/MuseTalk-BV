@@ -69,13 +69,27 @@ Base URL: same host/port as the app (e.g. `http://127.0.0.1:7860`).
 
 ### Native REST (separate audio + video uploads)
 
-- `GET /api/health` — no bearer; `{"status":"ok"}`.
+- `GET /api/health` — no bearer; `{"status":"ok", ...}`. When the voice cloner is mounted, adds `voice_cloner`, `voice_cloner_prefix`, `voice_cloner_auth` (`ddb` \| `jwt`), and `voice_cloner_backend` (`aws` \| `local`, inferred from env).
 - `POST /api/job` — bearer if set; multipart `audio` + `video` plus optional tuning form fields; `202` with `job_id`.
   - **`resolution_scale`** (string, default `full`) — `full` (100%), `half` (50%), `eighth` (12.5%), `lowest` (~6.25% linear). Frames are processed at the reduced size for speed, then **upscaled to the original video resolution** before the final MP4 is written for download.
 - `GET /api/job/{job_id}` — status JSON.
 - `GET /api/job/{job_id}/download` — MP4 when `done`.
 
-### Realtime pipeline (`/api/realtime/job`)
+### Voice clone (OpenVoice, monolith)
+
+When **`ENABLE_VOICE_CLONER=on`** and **`JWT_SECRET`** is set, the in-repo **voice-cloner** FastAPI app is mounted at **`/api/voice`** on the same process and port as MuseTalk (same bearer/JWT as other API routes).
+
+- **Train**: `POST /api/voice/train` — same JSON contract as standalone voice-cloner (`operation: start|end`, `reference` base64 PCM chunks). Returns `trained_voice_id` on `end`.
+- **Clone**: `POST /api/voice/clone` — body `{"base":"<base64 PCM16 mono 16kHz>"}`; returns `output_path` (base64 PCM of cloned audio).
+- **State**: `GET /api/voice/state` — same as upstream (optional bearer or `?sub=` link flow).
+
+**Persistence without AWS**: If DynamoDB user table env (`DDB_TABLE_NAME` + `AWS_REGION`) is not configured, the cloner verifies **JWT only** (claims `sub` required; `email` optional, defaults for local). If the embeddings DynamoDB table is unavailable, embeddings are kept **in memory** (single-process). If **S3** is not configured, reference WAVs are stored under **`VOICE_CLONER_LOCAL_DIR`** (default `./results/voice_cloner_data`) so cloning still works locally.
+
+With full AWS, behavior matches production-style DynamoDB + optional S3 for reference audio.
+
+### Realtime pipeline (`/api/realtime/job`) — deprecated for new clients
+
+**Deprecation:** New integrations should prefer **`POST /api/job`** (standard pipeline). The bundled **lipsync-rt-demo** no longer calls `/api/realtime/job`. The endpoint remains available for backward compatibility.
 
 Same job lifecycle as `/api/job` (`GET /api/job/{job_id}`, `/download`). Uses MuseTalk’s **realtime** path: the first **`realtime_prep_frames`** frames (default **30**) are extracted from the uploaded video with **ffmpeg**, then avatar preparation (landmarks, latents, masks) and batched inference (as in `scripts/realtime_inference.py`), then ffmpeg muxes frames + driving audio.
 

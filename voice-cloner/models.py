@@ -31,6 +31,11 @@ class CloneRequest(BaseModel):
     base: str  # base64-encoded audio to clone
 
 
+class CloneSubRequest(BaseModel):
+    sub: str  # links to voice_id; valid 1h after first /state
+    base: str  # base64-encoded audio to clone
+
+
 class CloneResponse(BaseModel):
     session_id: str
     trained_voice_id: str
