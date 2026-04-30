@@ -438,7 +438,8 @@ def inference(
         coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
         with open(crop_coord_save_path, 'wb') as f:
             pickle.dump(coord_list, f)
-    bbox_shift_text = get_bbox_range(input_img_list, bbox_shift)
+    #bbox_shift_text = get_bbox_range(input_img_list, bbox_shift) This is redundant, comented.
+    bbox_shift_text = ""
     _mark(
         "landmarks_read_or_extract",
         n_coords=len(coord_list),
