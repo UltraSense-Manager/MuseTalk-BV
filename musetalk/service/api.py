@@ -15,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
-from musetalk.service.ffmpeg_pipe import has_nvenc_encoder
+from musetalk.service.ffmpeg_pipe import has_nvenc_encoder, has_working_nvenc
 from musetalk.service.mux_demux import demux_muxed_mp4
 from musetalk.service.resolution_scale import parse_resolution_scale
 
@@ -93,10 +93,11 @@ def create_service_app(
 ) -> FastAPI:
     cfg = config or load_service_config()
     nvenc_available = has_nvenc_encoder()
+    nvenc_working = has_working_nvenc()
     requested_encoder = (cfg.ffmpeg_video_encoder or "").strip() or "h264_nvenc"
     effective_encoder = (
         "libx264"
-        if requested_encoder.endswith("_nvenc") and not nvenc_available
+        if requested_encoder.endswith("_nvenc") and not nvenc_working
         else requested_encoder
     )
     print(
@@ -110,7 +111,8 @@ def create_service_app(
         f"landmark_batch_size={cfg.landmark_batch_size} "
         f"ffmpeg_encoder_requested={requested_encoder} "
         f"ffmpeg_encoder_effective={effective_encoder} "
-        f"ffmpeg_nvenc_available={nvenc_available}",
+        f"ffmpeg_nvenc_available={nvenc_available} "
+        f"ffmpeg_nvenc_working={nvenc_working}",
         flush=True,
     )
 

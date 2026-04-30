@@ -32,7 +32,7 @@ from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from musetalk.utils.utils import datagen
 from musetalk.service.ffmpeg_pipe import (
     FFmpegRawVideoWriter,
-    has_nvenc_encoder,
+    has_working_nvenc,
     has_scale_cuda_filter,
     mux_video_with_audio,
     even_dim as stream_even_dim,
@@ -374,9 +374,9 @@ class RealtimeAvatar:
                 int(self.ctx.streaming_pipe_buffer_frames) * ew * eh * 3,
             )
             video_encoder = self.ctx.ffmpeg_video_encoder
-            if video_encoder.endswith("_nvenc") and not has_nvenc_encoder():
+            if video_encoder.endswith("_nvenc") and not has_working_nvenc():
                 print(
-                    f"[realtime] requested encoder '{video_encoder}' unavailable; fallback=libx264",
+                    f"[realtime] requested encoder '{video_encoder}' not usable; fallback=libx264",
                     flush=True,
                 )
                 video_encoder = "libx264"

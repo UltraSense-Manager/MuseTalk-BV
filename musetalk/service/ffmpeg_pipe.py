@@ -194,6 +194,43 @@ def has_nvenc_encoder() -> bool:
 
 
 @lru_cache(maxsize=1)
+def has_working_nvenc() -> bool:
+    """
+    True only when h264_nvenc is both listed and can initialize for a tiny encode.
+    This avoids false positives on hosts where FFmpeg was compiled with NVENC
+    support but runtime driver/device wiring is not usable.
+    """
+    if not has_nvenc_encoder():
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=64x64:r=1",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "h264_nvenc",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+@lru_cache(maxsize=1)
 def has_scale_cuda_filter() -> bool:
     try:
         proc = subprocess.run(

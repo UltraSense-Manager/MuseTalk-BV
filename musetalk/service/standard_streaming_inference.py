@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from musetalk.service.ffmpeg_pipe import (
     FFmpegRawVideoWriter,
-    has_nvenc_encoder,
+    has_working_nvenc,
     has_scale_cuda_filter,
     mux_video_with_audio,
     even_dim,
@@ -252,9 +252,9 @@ def run_standard_streaming_inference(
     temp_mp4 = os.path.join(temp_dir, f"stream_temp_{job_tag}.mp4")
     buf = max(256, int(streaming_pipe_buffer_frames) * src_w * src_h * 3)
     video_encoder = ffmpeg_video_encoder
-    if video_encoder.endswith("_nvenc") and not has_nvenc_encoder():
+    if video_encoder.endswith("_nvenc") and not has_working_nvenc():
         print(
-            f"[inference] requested encoder '{video_encoder}' unavailable; fallback=libx264",
+            f"[inference] requested encoder '{video_encoder}' not usable; fallback=libx264",
             flush=True,
         )
         video_encoder = "libx264"
