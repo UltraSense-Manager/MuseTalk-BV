@@ -61,7 +61,7 @@ class FFmpegRawVideoWriter:
                 vf_parts.append(f"hwupload_cuda,scale_cuda={tw}:{th}")
             else:
                 vf_parts.append(f"scale={tw}:{th}:flags=bilinear")
-        vf_parts.append("format=yuv420p")
+                vf_parts.append("format=yuv420p")
         cmd = [
             "ffmpeg",
             "-y",
