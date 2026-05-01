@@ -17,6 +17,9 @@ def even_dim(v: int) -> int:
     return iv if iv % 2 == 0 else iv - 1
 
 
+def join_vf_parts(vf: list[str]) -> str:
+    return "-vf" + ",".join(vf) if vf else ""
+
 class FFmpegRawVideoWriter:
     """
     Stream BGR uint8 frames (HxWx3) to libx264 via rawvideo rgb24 stdin.
@@ -58,10 +61,12 @@ class FFmpegRawVideoWriter:
                 and self.codec.endswith("_nvenc")
                 and has_scale_cuda_filter()
             ):
-                vf_parts.append(f"format=nv12,hwupload_cuda,scale_cuda={tw}:{th}")
+                vf_parts.append(f"format=nv12")
+                vf_parts.append(f"hwupload_cuda")
+                vf_parts.append(f"scale_cuda={tw}:{th}")
             else:
                 vf_parts.append(f"scale={tw}:{th}:flags=bilinear")
-                vf_parts.append("format=yuv420p")
+                vf_parts.append(f"format=yuv420p")
         cmd = [
             "ffmpeg",
             "-y",
@@ -77,8 +82,7 @@ class FFmpegRawVideoWriter:
             str(self.fps),
             "-i",
             "-",
-            "-vf",
-            ",".join(vf_parts),
+            join_vf_parts(vf_parts),
             "-c:v",
             self.codec,
             "-preset",
