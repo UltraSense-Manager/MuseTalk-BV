@@ -17,9 +17,6 @@ def even_dim(v: int) -> int:
     return iv if iv % 2 == 0 else iv - 1
 
 
-def join_vf_parts(vf: list[str]) -> str:
-    return "-vf" + ",".join(vf) if vf else ""
-
 class FFmpegRawVideoWriter:
     """
     Stream BGR uint8 frames (HxWx3) to libx264 via rawvideo rgb24 stdin.
@@ -82,7 +79,10 @@ class FFmpegRawVideoWriter:
             str(self.fps),
             "-i",
             "-",
-            join_vf_parts(vf_parts),
+        ]
+        if vf_parts:
+            cmd += ["-vf", ",".join(vf_parts)]
+        cmd += [
             "-c:v",
             self.codec,
             "-preset",
