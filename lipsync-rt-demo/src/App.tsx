@@ -23,7 +23,10 @@ const JOB_DEADLINE_MS = 3600 * 1000;
 export default function App() {
   const [baseUrl, setBaseUrl] = useState("");
   const [bearerToken, setBearerToken] = useState("");
+  const [drivingAudioSource, setDrivingAudioSource] = useState<"tts" | "upload">("tts");
   const [ttsText, setTtsText] = useState("");
+  const [drivingAudioFile, setDrivingAudioFile] = useState<File | null>(null);
+  const [drivingAudioObjectUrl, setDrivingAudioObjectUrl] = useState<string | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoObjectUrl, setVideoObjectUrl] = useState<string | null>(null);
 
@@ -72,6 +75,22 @@ export default function App() {
   }, [ttsText]);
 
   useEffect(() => {
+    if (!drivingAudioFile) {
+      setDrivingAudioObjectUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return;
+    }
+    const url = URL.createObjectURL(drivingAudioFile);
+    setDrivingAudioObjectUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return url;
+    });
+    return () => URL.revokeObjectURL(url);
+  }, [drivingAudioFile]);
+
+  useEffect(() => {
     return () => {
       const a = previewAudioRef.current;
       if (a) {
@@ -101,9 +120,13 @@ export default function App() {
     } catch {
       return "API base URL is not valid.";
     }
-    const ttsErr = validateTtsText(ttsText);
-    if (ttsErr) return ttsErr;
-    if (!puterAvailable()) return "Puter.js is still loading or blocked. Refresh the page.";
+    if (drivingAudioSource === "tts") {
+      const ttsErr = validateTtsText(ttsText);
+      if (ttsErr) return ttsErr;
+      if (!puterAvailable()) return "Puter.js is still loading or blocked. Refresh the page.";
+    } else {
+      if (!drivingAudioFile) return "Choose a driving audio file (WAV, MP3, etc.).";
+    }
     if (!videoFile) return "Choose a reference video.";
     if (useVoiceClone) {
       if (!bearerToken.trim()) {
@@ -112,7 +135,16 @@ export default function App() {
       if (!trainedVoiceId.trim()) return "Register a reference voice first (train), or turn off voice clone.";
     }
     return null;
-  }, [baseUrl, ttsText, videoFile, useVoiceClone, bearerToken, trainedVoiceId]);
+  }, [
+    baseUrl,
+    drivingAudioSource,
+    drivingAudioFile,
+    ttsText,
+    videoFile,
+    useVoiceClone,
+    bearerToken,
+    trainedVoiceId,
+  ]);
 
   const stopPreview = useCallback(() => {
     const a = previewAudioRef.current;
@@ -258,11 +290,18 @@ export default function App() {
     setLiveElapsedMs(0);
 
     try {
-      setInfo("Synthesizing speech (Puter.js)…");
-      let audioFile = await textToSpeechFile(ttsText);
+      let audioFile: File;
+      if (drivingAudioSource === "tts") {
+        setInfo("Synthesizing speech (Puter.js)…");
+        audioFile = await textToSpeechFile(ttsText);
+      } else {
+        if (!drivingAudioFile) throw new Error("Missing driving audio file.");
+        setInfo("Using uploaded driving audio…");
+        audioFile = drivingAudioFile;
+      }
       try {
         const dur = await getDecodedAudioDurationSeconds(audioFile);
-        setTtsDurationLine(`TTS duration: ${formatTtsDuration(dur)} (this run)`);
+        setTtsDurationLine(`Driving audio: ${formatTtsDuration(dur)} (this run)`);
         setInfo(`Driving audio ${formatTtsDuration(dur)} — preparing job…`);
       } catch {
         setTtsDurationLine(null);
@@ -281,8 +320,8 @@ export default function App() {
         bbox_shift: "0",
         extra_margin: "10",
         parsing_mode: "jaw",
-        left_cheek_width: "90",
-        right_cheek_width: "90",
+        left_cheek_width: "125",
+        right_cheek_width: "125",
         resolution_scale: resolutionScale,
       };
 
@@ -329,8 +368,9 @@ export default function App() {
     <div className="app">
       <h1>Lipsync demo</h1>
       <p className="hint">
-        Driving audio comes from Puter.js TTS. Configure your MuseTalk API URL and bearer token
-        (same as <code>test.py</code>). Standard jobs use <code>POST /api/job</code> only.
+        Driving audio can be <strong>Puter.js TTS</strong> or an <strong>uploaded file</strong>.
+        Configure your MuseTalk API URL and bearer token (same as <code>test.py</code>). Standard
+        jobs use <code>POST /api/job</code> only.
       </p>
 
       <form className="stack" onSubmit={onSubmit}>
@@ -375,34 +415,90 @@ export default function App() {
         </div>
 
         <div className="field">
-          <label htmlFor="tts">Text for TTS (Puter.js)</label>
-          <textarea
-            id="tts"
-            value={ttsText}
-            onChange={(e) => setTtsText(e.target.value)}
-            disabled={busy}
-            placeholder="Script to synthesize as driving audio…"
-          />
-          <div className="row tts-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => void onPreviewTts()}
-              disabled={busy || previewBusy}
-            >
-              {previewBusy ? "Preview…" : "Preview TTS"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={stopPreview}
-              disabled={busy || !previewActive}
-              title="Stop preview playback"
-            >
-              Stop preview
-            </button>
+          <span className="label-block">Driving audio</span>
+          <div className="row" style={{ flexWrap: "wrap", gap: "12px 20px" }}>
+            <label className="row" style={{ gap: 6, cursor: busy ? "not-allowed" : "pointer" }}>
+              <input
+                type="radio"
+                name="drive-audio"
+                checked={drivingAudioSource === "tts"}
+                onChange={() => {
+                  setDrivingAudioSource("tts");
+                  setError(null);
+                }}
+                disabled={busy}
+              />
+              Puter.js TTS
+            </label>
+            <label className="row" style={{ gap: 6, cursor: busy ? "not-allowed" : "pointer" }}>
+              <input
+                type="radio"
+                name="drive-audio"
+                checked={drivingAudioSource === "upload"}
+                onChange={() => {
+                  setDrivingAudioSource("upload");
+                  setError(null);
+                }}
+                disabled={busy}
+              />
+              Upload audio file
+            </label>
           </div>
-          <p className="hint">Preview uses the same Puter synthesis as submit (WAV).</p>
+
+          {drivingAudioSource === "tts" ? (
+            <>
+              <label htmlFor="tts" style={{ marginTop: 10, display: "block" }}>
+                Text for TTS (Puter.js)
+              </label>
+              <textarea
+                id="tts"
+                value={ttsText}
+                onChange={(e) => setTtsText(e.target.value)}
+                disabled={busy}
+                placeholder="Script to synthesize as driving audio…"
+              />
+              <div className="row tts-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void onPreviewTts()}
+                  disabled={busy || previewBusy}
+                >
+                  {previewBusy ? "Preview…" : "Preview TTS"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={stopPreview}
+                  disabled={busy || !previewActive}
+                  title="Stop preview playback"
+                >
+                  Stop preview
+                </button>
+              </div>
+              <p className="hint">Preview uses the same Puter synthesis as submit (WAV).</p>
+            </>
+          ) : (
+            <>
+              <label htmlFor="drive-audio-file" style={{ marginTop: 10, display: "block" }}>
+                Audio file (driving / lip-sync input)
+              </label>
+              <input
+                id="drive-audio-file"
+                type="file"
+                accept="audio/*,.wav,.mp3,.m4a,.aac,.ogg,.webm,.flac"
+                disabled={busy}
+                onChange={(e) => setDrivingAudioFile(e.target.files?.[0] ?? null)}
+              />
+              {drivingAudioObjectUrl ? (
+                <audio className="preview" src={drivingAudioObjectUrl} controls />
+              ) : null}
+              <p className="hint">
+                Same formats the server can decode (typically WAV/MP3). Voice clone still applies to
+                this audio when enabled.
+              </p>
+            </>
+          )}
         </div>
 
         <div className="row">
@@ -448,7 +544,8 @@ export default function App() {
           </div>
           <p className="hint">
             Requires server <code>ENABLE_VOICE_CLONER=on</code> and <code>JWT_SECRET</code>. Train once
-            per voice, then each run clones Puter TTS to that voice before lipsync.
+            per voice, then each run clones the driving audio (TTS or file) to that voice before
+            lipsync.
           </p>
           {useVoiceClone ? (
             <div className="stack" style={{ marginTop: 8 }}>

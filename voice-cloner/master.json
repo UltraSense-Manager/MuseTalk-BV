@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "original_file_name": "checkpoints_v2.zip",
+  "original_size": 122183334,
+  "original_sha256": "7415814fc603bffc33db54e250d2b624c16e51431774e5cf7762090cdff3fef7",
+  "num_chunks_requested": 5,
+  "num_chunks_written": 5,
+  "chunks": [
+    {
+      "index": 0,
+      "file": "checkpoints_v2.zip.part0000",
+      "size": 24436667,
+      "offset": 0,
+      "sha256": "1a293c73bc232a4df0e38d88552ae8b703d1a0c710f8e280a6b5be45d9fbc361"
+    },
+    {
+      "index": 1,
+      "file": "checkpoints_v2.zip.part0001",
+      "size": 24436667,
+      "offset": 24436667,
+      "sha256": "7e527e5b4daee7c55d7c96bdd62fc8ab496aa4fa33a717d9594b6bb9b3fb81df"
+    },
+    {
+      "index": 2,
+      "file": "checkpoints_v2.zip.part0002",
+      "size": 24436667,
+      "offset": 48873334,
+      "sha256": "b5cf00441ec4ee9717e67e1f10559103e9adf2ec77f65a4a803c9f775e44c7e6"
+    },
+    {
+      "index": 3,
+      "file": "checkpoints_v2.zip.part0003",
+      "size": 24436667,
+      "offset": 73310001,
+      "sha256": "22c242c75d55196f93a939231985b7ad0930368224b85c8c26fdf0859fbe3b13"
+    },
+    {
+      "index": 4,
+      "file": "checkpoints_v2.zip.part0004",
+      "size": 24436666,
+      "offset": 97746668,
+      "sha256": "7e59c862447691250fc7efccf6c456b591ea0645f26d1da3ea52211ca9dcb796"
+    }
+  ]
+}

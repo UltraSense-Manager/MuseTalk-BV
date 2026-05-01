@@ -10,6 +10,7 @@ ARG PYTHON_VERSION=3.12.2
 ARG PASSWORD
 FROM nvidia/cuda:12.6.0-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
+ENV TRANSFORMERS_CACHE=/app/hf_tcache
 ENV HF_HOME=/app/hf
 ENV XDG_CACHE_HOME=/app/hf_cache
 ENV POOCH_CACHE=/app/p_cache
@@ -25,12 +26,12 @@ RUN apt-get update && apt-get install -y -q --no-install-recommends \
         git \
         libssl-dev \
         wget \
-	unzip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get -y update
 RUN apt-get -y upgrade
 RUN apt-get install -y ffmpeg
+RUN apt-get install -y unzip
 
 RUN apt update && apt install -y gcc clang clang-tools cmake python3
 # Update package lists and install necessary dependencies for Python 3.10
@@ -116,6 +117,7 @@ RUN mim install "mmpose==1.1.0" --no-build-isolation
 RUN which ffmpeg
 RUN sh download_weights.sh
 RUN python3 voice-cloner/decompressor.py voice-cloner/master.json -o voice-cloner/checkpoints.zip && unzip -o -q voice-cloner/checkpoints.zip -d voice-cloner 
+RUN mv voice-cloner/checkpoints_v2 ./checkpoints_v2
 
 # Switch to the non-privileged user to run the application.
 USER appuser
