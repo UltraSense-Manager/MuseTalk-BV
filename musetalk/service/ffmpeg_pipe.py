@@ -212,7 +212,7 @@ def has_working_nvenc() -> bool:
                 "-f",
                 "lavfi",
                 "-i",
-                "color=c=black:s=64x64:r=1",
+                "color=c=black:s=640x480:r=1",
                 "-frames:v",
                 "1",
                 "-c:v",
