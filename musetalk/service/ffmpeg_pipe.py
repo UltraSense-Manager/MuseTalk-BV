@@ -99,6 +99,7 @@ class FFmpegRawVideoWriter:
             "yuv420p",
             out_mp4,
         ]
+        print(cmd)
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
