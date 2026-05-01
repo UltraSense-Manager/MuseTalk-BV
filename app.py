@@ -180,6 +180,7 @@ from musetalk.utils.audio_processor import AudioProcessor
 from musetalk.utils.utils import get_file_type, get_video_fps, datagen, load_all_model
 from musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs, coord_placeholder, get_bbox_range
 from musetalk.service.config import load_service_config
+from musetalk.service.runtime_perf import get_effective_service_config, init_baseline
 from musetalk.service.resolution_scale import (
     downscale_png_dir_inplace,
     parse_resolution_scale,
@@ -261,10 +262,11 @@ def inference(
         return " | ".join(parts)
 
     # Set default parameters, aligned with inference.py
+    eff_cfg = get_effective_service_config()
     args_dict = {
         "result_dir": './results/output', 
         "fps": 25, 
-        "batch_size": int(getattr(globals().get("svc_cfg"), "standard_batch_size", 8)),
+        "batch_size": int(eff_cfg.standard_batch_size),
         "output_vid_name": '', 
         "use_saved_coord": False,
         "audio_padding_length_left": 2,
@@ -276,12 +278,10 @@ def inference(
         "right_cheek_width": right_cheek_width
     }
     args = Namespace(**args_dict)
-    cfg = globals().get("svc_cfg")
-    cpu_workers = max(1, int(getattr(cfg, "cpu_workers", 2)))
-    enable_parallel_blend = bool(getattr(cfg, "enable_parallel_blend", False))
-    enable_audio_frame_overlap = bool(
-        getattr(cfg, "enable_parallel_audio_frame_overlap", True)
-    )
+    cfg = eff_cfg
+    cpu_workers = max(1, int(cfg.cpu_workers))
+    enable_parallel_blend = bool(cfg.enable_parallel_blend)
+    enable_audio_frame_overlap = bool(cfg.enable_parallel_audio_frame_overlap)
     _set_stage("preprocess")
 
     # Check ffmpeg
@@ -745,6 +745,7 @@ def _realtime_api_runner(
 ) -> tuple[str, str, str]:
     from musetalk.service.realtime_job import RealtimeJobContext, run_realtime_job
 
+    rt_cfg = get_effective_service_config()
     ctx = RealtimeJobContext(
         version="v15",
         extra_margin=extra_margin,
@@ -766,31 +767,15 @@ def _realtime_api_runner(
         device=device,
         weight_dtype=weight_dtype,
         timesteps=timesteps,
-        cpu_workers=max(1, int(getattr(svc_cfg, "cpu_workers", 2))),
-        enable_parallel_realtime_prep=bool(
-            getattr(svc_cfg, "enable_parallel_realtime_prep", False)
-        ),
-        enable_streaming_realtime=bool(
-            getattr(svc_cfg, "enable_streaming_realtime", False)
-        ),
-        streaming_pipe_buffer_frames=int(
-            getattr(svc_cfg, "streaming_pipe_buffer_frames", 4)
-        ),
-        ffmpeg_video_encoder=str(
-            getattr(svc_cfg, "ffmpeg_video_encoder", "h264_nvenc")
-        ),
-        ffmpeg_encoder_preset=str(
-            getattr(svc_cfg, "ffmpeg_encoder_preset", "p5")
-        ),
-        ffmpeg_encoder_crf=str(
-            getattr(svc_cfg, "ffmpeg_encoder_crf", "18")
-        ),
-        ffmpeg_encoder_cq=str(
-            getattr(svc_cfg, "ffmpeg_encoder_cq", "23")
-        ),
-        ffmpeg_use_gpu_scale=bool(
-            getattr(svc_cfg, "ffmpeg_use_gpu_scale", True)
-        ),
+        cpu_workers=max(1, int(rt_cfg.cpu_workers)),
+        enable_parallel_realtime_prep=bool(rt_cfg.enable_parallel_realtime_prep),
+        enable_streaming_realtime=bool(rt_cfg.enable_streaming_realtime),
+        streaming_pipe_buffer_frames=int(rt_cfg.streaming_pipe_buffer_frames),
+        ffmpeg_video_encoder=str(rt_cfg.ffmpeg_video_encoder),
+        ffmpeg_encoder_preset=str(rt_cfg.ffmpeg_encoder_preset),
+        ffmpeg_encoder_crf=str(rt_cfg.ffmpeg_encoder_crf),
+        ffmpeg_encoder_cq=str(rt_cfg.ffmpeg_encoder_cq),
+        ffmpeg_use_gpu_scale=bool(rt_cfg.ffmpeg_use_gpu_scale),
     )
     return run_realtime_job(
         ctx,
@@ -951,6 +936,7 @@ import uvicorn
 
 demo.queue()
 svc_cfg = load_service_config()
+init_baseline(svc_cfg)
 if svc_cfg.secured_mode and (
     not svc_cfg.gradio_username or not svc_cfg.gradio_password
 ):

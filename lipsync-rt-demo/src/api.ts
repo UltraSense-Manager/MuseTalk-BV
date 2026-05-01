@@ -129,6 +129,97 @@ export async function downloadJob(
   return r.blob();
 }
 
+/** Keys match GET /api/health tunables; PATCH /api/settings/perf accepts the same (admin BEARER_TOKEN only). */
+export type PerfTunableState = {
+  cpu_workers: number;
+  parallel_blend: boolean;
+  audio_frame_overlap: boolean;
+  parallel_realtime_prep: boolean;
+  streaming_standard: boolean;
+  streaming_realtime: boolean;
+  streaming_pipe_buffer_frames: number;
+  ffmpeg_video_encoder: string;
+  ffmpeg_encoder_preset: string;
+  ffmpeg_encoder_crf: string;
+  ffmpeg_encoder_cq: string;
+  ffmpeg_use_gpu_scale: boolean;
+  standard_batch_size: number;
+  realtime_batch_size_default: number;
+  landmark_batch_size: number;
+};
+
+export type PerfSettingsResponse = {
+  baseline: PerfTunableState | null;
+  patch: Partial<PerfTunableState>;
+  effective: PerfTunableState | null;
+};
+
+export async function fetchPerfSettings(
+  base: string,
+  token: string,
+  signal?: AbortSignal
+): Promise<PerfSettingsResponse> {
+  const r = await fetch(`${normalizeBase(base)}/api/settings/perf`, {
+    method: "GET",
+    headers: { ...authHeaders(token), Accept: "application/json" },
+    signal,
+  });
+  const text = await r.text();
+  if (r.status === 401) throw new Error("401 Unauthorized — admin BEARER_TOKEN required.");
+  if (r.status === 403) {
+    throw new Error(
+      `403 Forbidden — ${text.slice(0, 280)} Use the server's BEARER_TOKEN (not an end-user JWT).`
+    );
+  }
+  if (!r.ok) throw new Error(`Perf settings GET failed (${r.status}): ${text.slice(0, 400)}`);
+  return JSON.parse(text) as PerfSettingsResponse;
+}
+
+export async function patchPerfSettings(
+  base: string,
+  token: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<PerfSettingsResponse & { status?: string }> {
+  const r = await fetch(`${normalizeBase(base)}/api/settings/perf`, {
+    method: "PATCH",
+    headers: { ...authHeaders(token), "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const text = await r.text();
+  if (r.status === 401) throw new Error("401 Unauthorized — admin BEARER_TOKEN required.");
+  if (r.status === 403) {
+    throw new Error(
+      `403 Forbidden — ${text.slice(0, 280)} Use the server's BEARER_TOKEN (not an end-user JWT).`
+    );
+  }
+  if (!r.ok) throw new Error(`Perf settings PATCH failed (${r.status}): ${text.slice(0, 400)}`);
+  return JSON.parse(text) as PerfSettingsResponse & { status?: string };
+}
+
+export async function resetPerfSettings(
+  base: string,
+  token: string,
+  signal?: AbortSignal
+): Promise<PerfSettingsResponse & { status?: string; reset?: boolean }> {
+  const r = await fetch(`${normalizeBase(base)}/api/settings/perf/reset`, {
+    method: "POST",
+    headers: { ...authHeaders(token), "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({}),
+    signal,
+  });
+  const text = await r.text();
+  if (r.status === 401) throw new Error("401 Unauthorized — admin BEARER_TOKEN required.");
+  if (r.status === 403) {
+    throw new Error(
+      `403 Forbidden — ${text.slice(0, 280)} Use the server's BEARER_TOKEN (not an end-user JWT).`
+    );
+  }
+  if (!r.ok) throw new Error(`Perf settings reset failed (${r.status}): ${text.slice(0, 400)}`);
+  return JSON.parse(text) as PerfSettingsResponse & { status?: string; reset?: boolean };
+}
+
 export async function pollUntilDone(
   base: string,
   token: string,

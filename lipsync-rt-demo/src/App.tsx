@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { downloadJob, pollUntilDone, submitStandardJob } from "./api";
+import {
+  downloadJob,
+  fetchPerfSettings,
+  patchPerfSettings,
+  pollUntilDone,
+  resetPerfSettings,
+  submitStandardJob,
+  type PerfTunableState,
+} from "./api";
 import {
   formatTtsDuration,
   getDecodedAudioDurationSeconds,
@@ -19,6 +27,46 @@ import "./App.css";
 
 const POLL_INTERVAL_MS = 2000;
 const JOB_DEADLINE_MS = 3600 * 1000;
+
+const PERF_ADV_FIELDS: { key: keyof PerfTunableState; label: string; kind: "int" | "bool" | "str" }[] =
+  [
+    { key: "cpu_workers", label: "CPU_WORKERS", kind: "int" },
+    { key: "standard_batch_size", label: "STANDARD_BATCH_SIZE", kind: "int" },
+    { key: "realtime_batch_size_default", label: "REALTIME_BATCH_SIZE_DEFAULT", kind: "int" },
+    { key: "landmark_batch_size", label: "LANDMARK_BATCH_SIZE", kind: "int" },
+    { key: "streaming_pipe_buffer_frames", label: "STREAMING_PIPE_BUFFER_FRAMES", kind: "int" },
+    { key: "parallel_blend", label: "ENABLE_PARALLEL_BLEND", kind: "bool" },
+    { key: "audio_frame_overlap", label: "ENABLE_PARALLEL_AUDIO_FRAME_OVERLAP", kind: "bool" },
+    { key: "parallel_realtime_prep", label: "ENABLE_PARALLEL_REALTIME_PREP", kind: "bool" },
+    { key: "streaming_standard", label: "ENABLE_STREAMING_STANDARD", kind: "bool" },
+    { key: "streaming_realtime", label: "ENABLE_STREAMING_REALTIME", kind: "bool" },
+    { key: "ffmpeg_use_gpu_scale", label: "FFMPEG_USE_GPU_SCALE", kind: "bool" },
+    { key: "ffmpeg_video_encoder", label: "FFMPEG_VIDEO_ENCODER", kind: "str" },
+    { key: "ffmpeg_encoder_preset", label: "FFMPEG_ENCODER_PRESET", kind: "str" },
+    { key: "ffmpeg_encoder_crf", label: "FFMPEG_ENCODER_CRF", kind: "str" },
+    { key: "ffmpeg_encoder_cq", label: "FFMPEG_ENCODER_CQ", kind: "str" },
+  ];
+
+function perfEffectiveToForm(e: PerfTunableState): Record<string, string> {
+  const o: Record<string, string> = {};
+  for (const [k, v] of Object.entries(e) as [string, unknown][]) {
+    if (typeof v === "boolean") o[k] = v ? "true" : "false";
+    else o[k] = String(v ?? "");
+  }
+  return o;
+}
+
+function perfFormToPayload(form: Record<string, string>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const { key, kind } of PERF_ADV_FIELDS) {
+    const raw = form[key];
+    if (raw === undefined) continue;
+    if (kind === "bool") out[key] = raw === "true";
+    else if (kind === "int") out[key] = parseInt(raw, 10);
+    else out[key] = raw;
+  }
+  return out;
+}
 
 export default function App() {
   const [baseUrl, setBaseUrl] = useState("");
@@ -43,6 +91,10 @@ export default function App() {
   const [ttsDurationLine, setTtsDurationLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [perfForm, setPerfForm] = useState<Record<string, string> | null>(null);
+  const [perfAdvBusy, setPerfAdvBusy] = useState(false);
+  const [perfAdvError, setPerfAdvError] = useState<string | null>(null);
+  const [perfAdvInfo, setPerfAdvInfo] = useState<string | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [liveElapsedMs, setLiveElapsedMs] = useState(0);
 
@@ -205,6 +257,88 @@ export default function App() {
 
   const normalizedBase = () =>
     baseUrl.trim().startsWith("http") ? baseUrl.trim() : `http://${baseUrl.trim()}`;
+
+  const loadPerfAdv = useCallback(async () => {
+    setPerfAdvError(null);
+    setPerfAdvInfo(null);
+    const base = normalizedBase();
+    if (!baseUrl.trim()) {
+      setPerfAdvError("Enter API base URL first.");
+      return;
+    }
+    try {
+      void new URL(base);
+    } catch {
+      setPerfAdvError("API base URL is not valid.");
+      return;
+    }
+    if (!bearerToken.trim()) {
+      setPerfAdvError("Paste the server's BEARER_TOKEN (admin). End-user JWTs return 403 here.");
+      return;
+    }
+    setPerfAdvBusy(true);
+    try {
+      const s = await fetchPerfSettings(base, bearerToken);
+      if (!s.effective) {
+        setPerfAdvError("Server returned no effective config (baseline not ready?).");
+        setPerfForm(null);
+        return;
+      }
+      setPerfForm(perfEffectiveToForm(s.effective));
+      setPerfAdvInfo("Loaded active server settings.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setPerfAdvError(msg);
+      setPerfForm(null);
+    } finally {
+      setPerfAdvBusy(false);
+    }
+  }, [baseUrl, bearerToken]);
+
+  const onApplyPerfAdv = useCallback(async () => {
+    setPerfAdvError(null);
+    setPerfAdvInfo(null);
+    if (!perfForm) {
+      setPerfAdvError("Load settings first.");
+      return;
+    }
+    const base = normalizedBase();
+    if (!bearerToken.trim()) {
+      setPerfAdvError("Bearer token required.");
+      return;
+    }
+    setPerfAdvBusy(true);
+    try {
+      const body = perfFormToPayload(perfForm);
+      const res = await patchPerfSettings(base, bearerToken, body);
+      if (res.effective) setPerfForm(perfEffectiveToForm(res.effective));
+      setPerfAdvInfo("Applied. New jobs use these values (in-process until reset).");
+    } catch (err) {
+      setPerfAdvError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPerfAdvBusy(false);
+    }
+  }, [perfForm, baseUrl, bearerToken]);
+
+  const onResetPerfAdv = useCallback(async () => {
+    setPerfAdvError(null);
+    setPerfAdvInfo(null);
+    const base = normalizedBase();
+    if (!bearerToken.trim()) {
+      setPerfAdvError("Bearer token required.");
+      return;
+    }
+    setPerfAdvBusy(true);
+    try {
+      const res = await resetPerfSettings(base, bearerToken);
+      if (res.effective) setPerfForm(perfEffectiveToForm(res.effective));
+      setPerfAdvInfo("Reset to process-start defaults (.env snapshot).");
+    } catch (err) {
+      setPerfAdvError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPerfAdvBusy(false);
+    }
+  }, [baseUrl, bearerToken]);
 
   const onRegisterVoice = async () => {
     setError(null);
@@ -399,6 +533,96 @@ export default function App() {
             disabled={busy}
           />
         </div>
+
+        <details
+          className="adv-perf"
+          onToggle={(e) => {
+            if ((e.target as HTMLDetailsElement).open) void loadPerfAdv();
+          }}
+        >
+          <summary>Advanced — server perf knobs (admin BEARER_TOKEN only)</summary>
+          <p className="hint" style={{ marginTop: 8 }}>
+            <code>GET/PATCH /api/settings/perf</code> and <code>POST /api/settings/perf/reset</code>{" "}
+            require the same bearer value as the server&apos;s <code>BEARER_TOKEN</code>, not an
+            end-user JWT. Changes apply in this process until reset.
+          </p>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={perfAdvBusy || busy}
+              onClick={() => void loadPerfAdv()}
+            >
+              {perfAdvBusy ? "Loading…" : "Reload from server"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={perfAdvBusy || busy || !perfForm}
+              onClick={() => void onApplyPerfAdv()}
+            >
+              Apply PATCH
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={perfAdvBusy || busy}
+              onClick={() => void onResetPerfAdv()}
+            >
+              Reset to .env defaults
+            </button>
+          </div>
+          {perfForm ? (
+            <div className="adv-perf-grid">
+              {PERF_ADV_FIELDS.map(({ key, label, kind }) => (
+                <div className="field" key={key}>
+                  {kind === "bool" ? (
+                    <label className="row" style={{ gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={perfForm[key] === "true"}
+                        onChange={(e) =>
+                          setPerfForm((prev) =>
+                            prev
+                              ? { ...prev, [key]: e.target.checked ? "true" : "false" }
+                              : prev
+                          )
+                        }
+                        disabled={perfAdvBusy || busy}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ) : (
+                    <>
+                      <label htmlFor={`perf-${key}`}>{label}</label>
+                      <input
+                        id={`perf-${key}`}
+                        type={kind === "int" ? "number" : "text"}
+                        value={perfForm[key] ?? ""}
+                        onChange={(e) =>
+                          setPerfForm((prev) =>
+                            prev ? { ...prev, [key]: e.target.value } : prev
+                          )
+                        }
+                        disabled={perfAdvBusy || busy}
+                      />
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {perfAdvError ? (
+            <div className="msg error" role="alert" style={{ marginTop: 8 }}>
+              {perfAdvError}
+            </div>
+          ) : null}
+          {perfAdvInfo && !perfAdvError ? (
+            <p className="hint" style={{ marginTop: 8 }}>
+              {perfAdvInfo}
+            </p>
+          ) : null}
+        </details>
 
         <div className="field">
           <label htmlFor="video">Reference video</label>

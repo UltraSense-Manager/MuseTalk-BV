@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import jwt
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 
 from musetalk.service.config import ServiceConfig, load_service_config
+from musetalk.service import runtime_perf
 from musetalk.service.voice_cloner_mount import mount_voice_cloner_if_enabled
 from musetalk.service.ffmpeg_pipe import has_nvenc_encoder, has_working_nvenc
 from musetalk.service.mux_demux import demux_muxed_mp4
@@ -93,6 +94,7 @@ def create_service_app(
     realtime_runner: Callable[..., tuple[str, str, str]] | None = None,
 ) -> FastAPI:
     cfg = config or load_service_config()
+    runtime_perf.init_baseline(cfg)
     nvenc_available = has_nvenc_encoder()
     nvenc_working = has_working_nvenc()
     requested_encoder = (cfg.ffmpeg_video_encoder or "").strip() or "h264_nvenc"
@@ -127,6 +129,33 @@ def create_service_app(
     ) -> str:
         return _resolve_user_id(cfg, creds)
 
+    def admin_bearer_dep(
+        creds: HTTPAuthorizationCredentials | None = Depends(security),
+    ) -> None:
+        if creds is None or creds.scheme.lower() != "bearer":
+            raise HTTPException(
+                status_code=401, detail="Missing or invalid bearer token"
+            )
+        token = (creds.credentials or "").strip()
+        if not token:
+            raise HTTPException(
+                status_code=401, detail="Missing or invalid bearer token"
+            )
+        if not cfg.bearer_token:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Runtime perf tuning requires BEARER_TOKEN to be configured on the server."
+                ),
+            )
+        if token != cfg.bearer_token:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Admin bearer token required for perf settings (use the server's BEARER_TOKEN)."
+                ),
+            )
+
     app = FastAPI(title="MuseTalk Service", version="1.0")
     app.state.voice_cloner_mounted = mount_voice_cloner_if_enabled(
         app, enabled=bool(cfg.enable_voice_cloner)
@@ -134,23 +163,24 @@ def create_service_app(
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
+        eff = runtime_perf.get_effective_service_config()
         out: dict[str, Any] = {
             "status": "ok",
-            "cpu_workers": cfg.cpu_workers,
-            "parallel_blend": cfg.enable_parallel_blend,
-            "audio_frame_overlap": cfg.enable_parallel_audio_frame_overlap,
-            "parallel_realtime_prep": cfg.enable_parallel_realtime_prep,
-            "streaming_standard": cfg.enable_streaming_standard,
-            "streaming_realtime": cfg.enable_streaming_realtime,
-            "streaming_pipe_buffer_frames": cfg.streaming_pipe_buffer_frames,
-            "ffmpeg_video_encoder": cfg.ffmpeg_video_encoder,
-            "ffmpeg_encoder_preset": cfg.ffmpeg_encoder_preset,
-            "ffmpeg_encoder_crf": cfg.ffmpeg_encoder_crf,
-            "ffmpeg_encoder_cq": cfg.ffmpeg_encoder_cq,
-            "ffmpeg_use_gpu_scale": cfg.ffmpeg_use_gpu_scale,
-            "standard_batch_size": cfg.standard_batch_size,
-            "realtime_batch_size_default": cfg.realtime_batch_size_default,
-            "landmark_batch_size": cfg.landmark_batch_size,
+            "cpu_workers": eff.cpu_workers,
+            "parallel_blend": eff.enable_parallel_blend,
+            "audio_frame_overlap": eff.enable_parallel_audio_frame_overlap,
+            "parallel_realtime_prep": eff.enable_parallel_realtime_prep,
+            "streaming_standard": eff.enable_streaming_standard,
+            "streaming_realtime": eff.enable_streaming_realtime,
+            "streaming_pipe_buffer_frames": eff.streaming_pipe_buffer_frames,
+            "ffmpeg_video_encoder": eff.ffmpeg_video_encoder,
+            "ffmpeg_encoder_preset": eff.ffmpeg_encoder_preset,
+            "ffmpeg_encoder_crf": eff.ffmpeg_encoder_crf,
+            "ffmpeg_encoder_cq": eff.ffmpeg_encoder_cq,
+            "ffmpeg_use_gpu_scale": eff.ffmpeg_use_gpu_scale,
+            "standard_batch_size": eff.standard_batch_size,
+            "realtime_batch_size_default": eff.realtime_batch_size_default,
+            "landmark_batch_size": eff.landmark_batch_size,
             "voice_cloner": bool(getattr(app.state, "voice_cloner_mounted", False)),
             "voice_cloner_prefix": "/api/voice" if getattr(app.state, "voice_cloner_mounted", False) else None,
         }
@@ -210,13 +240,14 @@ def create_service_app(
         with open(muxed, "wb") as mf:
             mf.write(raw)
 
+        eff0 = runtime_perf.get_effective_service_config()
         with _JOBS_LOCK:
             _JOBS[job_id] = {
                 "status": "queued",
                 "work_dir": str(work),
                 "message": "",
                 "kind": "contract",
-                "cpu_workers": cfg.cpu_workers,
+                "cpu_workers": eff0.cpu_workers,
             }
         threading.Thread(
             target=_run_contract_muxed_job,
@@ -288,17 +319,18 @@ def create_service_app(
             shutil.copyfileobj(video.file, vf)
         upload_elapsed = time.perf_counter() - t_up
 
+        eff = runtime_perf.get_effective_service_config()
         with _JOBS_LOCK:
             _JOBS[job_id] = {
                 "status": "queued",
                 "work_dir": str(work),
                 "message": f"upload {upload_elapsed:.2f}s",
                 "kind": "standard",
-                "cpu_workers": cfg.cpu_workers,
+                "cpu_workers": eff.cpu_workers,
                 "stage_times": {"upload": round(upload_elapsed, 3)},
                 "pipeline_mode": (
                     "streaming_standard"
-                    if cfg.enable_streaming_standard
+                    if eff.enable_streaming_standard
                     else "legacy"
                 ),
             }
@@ -338,7 +370,7 @@ def create_service_app(
             left_cheek_width: int = Form(90),
             right_cheek_width: int = Form(90),
             realtime_prep_frames: int = Form(30),
-            realtime_batch_size: int = Form(cfg.realtime_batch_size_default),
+            realtime_batch_size: Optional[int] = Form(None),
             realtime_fps: int = Form(25),
             clone_id: Optional[str] = Form(
                 None,
@@ -360,7 +392,14 @@ def create_service_app(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
             prep = max(1, min(300, int(realtime_prep_frames)))
-            bs = max(1, min(128, int(realtime_batch_size)))
+            eff_rt = runtime_perf.get_effective_service_config()
+            bs_default = eff_rt.realtime_batch_size_default
+            bs_raw = (
+                int(realtime_batch_size)
+                if realtime_batch_size is not None
+                else int(bs_default)
+            )
+            bs = max(1, min(128, bs_raw))
             fps = max(1, min(60, int(realtime_fps)))
 
             requested_clone = (clone_id or "").strip()
@@ -418,11 +457,11 @@ def create_service_app(
                     "clone_id": persist_user_id,
                     "reuse_avatar": is_reuse,
                     "use_clone": is_reuse,
-                    "cpu_workers": cfg.cpu_workers,
+                    "cpu_workers": eff_rt.cpu_workers,
                     "stage_times": {"upload": round(upload_elapsed, 3)},
                     "pipeline_mode": (
                         "streaming_realtime"
-                        if cfg.enable_streaming_realtime
+                        if eff_rt.enable_streaming_realtime
                         else "legacy"
                     ),
                 }
@@ -509,6 +548,29 @@ def create_service_app(
             media_type="video/mp4",
             filename=os.path.basename(path),
         )
+
+    @app.get("/api/settings/perf", dependencies=[Depends(admin_bearer_dep)])
+    def get_perf_settings() -> dict[str, Any]:
+        return runtime_perf.get_state()
+
+    @app.patch("/api/settings/perf", dependencies=[Depends(admin_bearer_dep)])
+    async def patch_perf_settings(
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> dict[str, Any]:
+        try:
+            runtime_perf.apply_perf_patch(body)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {"status": "ok", **runtime_perf.get_state()}
+
+    @app.post("/api/settings/perf/reset", dependencies=[Depends(admin_bearer_dep)])
+    async def reset_perf_settings(
+        _body: dict[str, Any] | None = Body(default=None),
+    ) -> dict[str, Any]:
+        runtime_perf.reset_perf()
+        return {"status": "ok", "reset": True, **runtime_perf.get_state()}
 
     return app
 

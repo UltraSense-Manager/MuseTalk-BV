@@ -10,6 +10,38 @@
   gap: 1rem;
 }
 
+.adv-perf {
+  padding: 0.75rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #3c4043;
+  background: #14161c;
+}
+
+.adv-perf > summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #bdc1c6;
+}
+
+.adv-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.adv-perf-grid .field input[type="number"],
+.adv-perf-grid .field input[type="text"] {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #3c4043;
+  background: #1a1d24;
+  color: inherit;
+  font: inherit;
+}
+
 .field label {
   display: block;
   font-size: 0.8rem;

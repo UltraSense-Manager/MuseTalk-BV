@@ -26,11 +26,16 @@ fa = FaceAlignment(LandmarksType._2D, flip_input=False,device=device)
 coord_placeholder = (0.0,0.0,0.0,0.0)
 
 def _landmark_batch_size() -> int:
-    raw = os.environ.get("LANDMARK_BATCH_SIZE", "1").strip() or "1"
     try:
-        return max(1, int(raw))
-    except ValueError:
-        return 1
+        from musetalk.service.runtime_perf import effective_landmark_batch_size
+
+        return effective_landmark_batch_size()
+    except Exception:
+        raw = os.environ.get("LANDMARK_BATCH_SIZE", "1").strip() or "1"
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 1
 
 def resize_landmark(landmark, w, h, new_w, new_h):
     w_ratio = new_w / w
