@@ -31,7 +31,6 @@ RUN apt-get update && apt-get install -y -q --no-install-recommends \
 RUN apt-get -y update
 RUN apt-get -y upgrade
 RUN apt-get install -y ffmpeg
-RUN apt-get install -y unzip
 
 RUN apt update && apt install -y gcc clang clang-tools cmake python3
 # Update package lists and install necessary dependencies for Python 3.10
@@ -68,6 +67,7 @@ ENV PYTHONUNBUFFERED=1
 
 ARG UID=10001
 RUN apt-get update && apt-get install -y git
+RUN apt-get install -y unzip
 
 RUN pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
 RUN python -m pip install --upgrade setuptools
