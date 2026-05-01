@@ -22,7 +22,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from auth import extract_token_from_websocket, get_current_user, get_current_user_optional, verify_jwt_and_load_user
+from auth import (
+    extract_token_from_websocket,
+    get_current_user,
+    get_current_user_optional,
+    verify_bearer_or_jwt,
+)
 from audio import (
     append_pcm_chunk,
     compute_trained_voice_id,
@@ -570,7 +575,7 @@ async def train_voice_ws(websocket: WebSocket) -> None:
     logger.debug("WS /train connection attempt")
     try:
         token = extract_token_from_websocket(websocket)
-        user = verify_jwt_and_load_user(token)
+        user = verify_bearer_or_jwt(token)
     except HTTPException as exc:
         logger.warning("WS /train auth failed: %s", exc.detail)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -639,7 +644,7 @@ async def clone_voice_ws(websocket: WebSocket) -> None:
     logger.debug("WS /clone connection attempt")
     try:
         token = extract_token_from_websocket(websocket)
-        user = verify_jwt_and_load_user(token)
+        user = verify_bearer_or_jwt(token)
     except HTTPException as exc:
         logger.warning("WS /clone auth failed: %s", exc.detail)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)

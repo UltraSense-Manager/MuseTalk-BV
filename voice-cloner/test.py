@@ -1,6 +1,8 @@
 import base64
 from typing import Any, Dict
 
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,11 +30,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     async def fake_get_current_user(*args: Any, **kwargs: Dict[str, Any]) -> AuthedUser:  # type: ignore[override]
         return user
 
-    def fake_verify_jwt_and_load_user(token: str) -> AuthedUser:
+    def fake_verify_bearer_or_jwt(token: str) -> AuthedUser:
         return user
 
     def fake_extract_token_from_websocket(websocket) -> str:
-        # Token value is irrelevant since verify_jwt is patched
+        # Token value is irrelevant since verify_bearer_or_jwt is patched
         return "dummy-token"
 
     def fake_run_clone(*args: Any, **kwargs: Dict[str, Any]) -> str:
@@ -44,7 +46,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     # Patch auth / cloning entrypoints used by main.py
     monkeypatch.setattr(main, "get_current_user", fake_get_current_user)
-    monkeypatch.setattr(main, "verify_jwt_and_load_user", fake_verify_jwt_and_load_user)
+    monkeypatch.setattr(main, "verify_bearer_or_jwt", fake_verify_bearer_or_jwt)
     monkeypatch.setattr(main, "extract_token_from_websocket", fake_extract_token_from_websocket)
     monkeypatch.setattr(main, "run_clone", fake_run_clone)
     monkeypatch.setattr(main, "extract_speaker_embedding", fake_extract_speaker_embedding)
@@ -65,6 +67,15 @@ def test_health_ok(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+def test_verify_bearer_or_jwt_admin_matches_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    voice_auth = sys.modules["auth"]
+    monkeypatch.setattr(voice_auth, "BEARER_TOKEN", "admin-shared-secret")
+    u = voice_auth.verify_bearer_or_jwt("admin-shared-secret")
+    assert u.sub == "admin"
+    assert u.email == "admin@local"
+    assert u.raw_claims.get("admin") is True
 
 
 def test_state_initial_has_no_trained_voice(client: TestClient) -> None:

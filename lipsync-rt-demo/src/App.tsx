@@ -106,7 +106,9 @@ export default function App() {
     if (!puterAvailable()) return "Puter.js is still loading or blocked. Refresh the page.";
     if (!videoFile) return "Choose a reference video.";
     if (useVoiceClone) {
-      if (!bearerToken.trim()) return "Voice clone requires a bearer token (same JWT as the API).";
+      if (!bearerToken.trim()) {
+        return "Voice clone requires a bearer token (same JWT as the API, or admin BEARER_TOKEN if configured).";
+      }
       if (!trainedVoiceId.trim()) return "Register a reference voice first (train), or turn off voice clone.";
     }
     return null;

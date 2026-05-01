@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 JWT_SECRET = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
+# Same admin override as MuseTalk `musetalk.service.api` (`BEARER_TOKEN` matches raw bearer value).
+BEARER_TOKEN = os.getenv("BEARER_TOKEN", "").strip()
 DDB_TABLE_NAME = os.getenv("DDB_TABLE_NAME", "").strip()
 AWS_REGION = os.getenv("AWS_REGION", "").strip()
 
@@ -117,12 +119,29 @@ def verify_jwt_and_load_user(token: str) -> AuthedUser:
     return AuthedUser(sub=sub, email=email, raw_claims=payload)
 
 
+def verify_bearer_or_jwt(token: str) -> AuthedUser:
+    """
+    Accept the configured admin `BEARER_TOKEN` (same as MuseTalk service) or a user JWT.
+
+    Admin path uses `sub` ``admin`` so sessions align with `/api/job` when using the admin token.
+    """
+    stripped = (token or "").strip()
+    if BEARER_TOKEN and stripped == BEARER_TOKEN:
+        logger.debug("verify_bearer_or_jwt: admin BEARER_TOKEN match")
+        return AuthedUser(
+            sub="admin",
+            email="admin@local",
+            raw_claims={"sub": "admin", "admin": True},
+        )
+    return verify_jwt_and_load_user(stripped)
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> AuthedUser:
     token = credentials.credentials
     logger.debug("get_current_user: verifying Bearer token")
-    return verify_jwt_and_load_user(token)
+    return verify_bearer_or_jwt(token)
 
 
 async def get_current_user_optional(
@@ -132,7 +151,7 @@ async def get_current_user_optional(
     if not credentials:
         return None
     try:
-        return verify_jwt_and_load_user(credentials.credentials)
+        return verify_bearer_or_jwt(credentials.credentials)
     except HTTPException:
         return None
 

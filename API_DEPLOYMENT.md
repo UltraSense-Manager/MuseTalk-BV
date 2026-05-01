@@ -77,13 +77,13 @@ Base URL: same host/port as the app (e.g. `http://127.0.0.1:7860`).
 
 ### Voice clone (OpenVoice, monolith)
 
-When **`ENABLE_VOICE_CLONER=on`** and **`JWT_SECRET`** is set, the in-repo **voice-cloner** FastAPI app is mounted at **`/api/voice`** on the same process and port as MuseTalk (same bearer/JWT as other API routes).
+When **`ENABLE_VOICE_CLONER=on`** and **`JWT_SECRET`** is set, the in-repo **voice-cloner** FastAPI app is mounted at **`/api/voice`** on the same process and port as MuseTalk. **Auth matches the main API:** if **`BEARER_TOKEN`** is set and `Authorization: Bearer` equals that value, the cloner treats the caller as user id **`admin`** (same override as **`POST /api/job`**). Otherwise the bearer is verified as a JWT (`sub` required for user sessions; `email` per DynamoDB mode above).
 
 - **Train**: `POST /api/voice/train` — same JSON contract as standalone voice-cloner (`operation: start|end`, `reference` base64 PCM chunks). Returns `trained_voice_id` on `end`.
 - **Clone**: `POST /api/voice/clone` — body `{"base":"<base64 PCM16 mono 16kHz>"}`; returns `output_path` (base64 PCM of cloned audio).
 - **State**: `GET /api/voice/state` — same as upstream (optional bearer or `?sub=` link flow).
 
-**Persistence without AWS**: If DynamoDB user table env (`DDB_TABLE_NAME` + `AWS_REGION`) is not configured, the cloner verifies **JWT only** (claims `sub` required; `email` optional, defaults for local). If the embeddings DynamoDB table is unavailable, embeddings are kept **in memory** (single-process). If **S3** is not configured, reference WAVs are stored under **`VOICE_CLONER_LOCAL_DIR`** (default `./results/voice_cloner_data`) so cloning still works locally.
+**Persistence without AWS**: If DynamoDB user table env (`DDB_TABLE_NAME` + `AWS_REGION`) is not configured, the cloner verifies **JWT** (or **`BEARER_TOKEN`** admin) only — for JWT, claims **`sub`** required; **`email`** optional, defaults for local. If the embeddings DynamoDB table is unavailable, embeddings are kept **in memory** (single-process). If **S3** is not configured, reference WAVs are stored under **`VOICE_CLONER_LOCAL_DIR`** (default `./results/voice_cloner_data`) so cloning still works locally.
 
 With full AWS, behavior matches production-style DynamoDB + optional S3 for reference audio.
 
