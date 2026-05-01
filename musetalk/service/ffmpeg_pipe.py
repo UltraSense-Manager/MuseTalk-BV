@@ -58,7 +58,7 @@ class FFmpegRawVideoWriter:
                 and self.codec.endswith("_nvenc")
                 and has_scale_cuda_filter()
             ):
-                vf_parts.append(f"scale_cuda={tw}:{th}")
+                vf_parts.append(f"hwupload_cuda,scale_cuda={tw}:{th}")
             else:
                 vf_parts.append(f"scale={tw}:{th}:flags=bilinear")
         vf_parts.append("format=yuv420p")
